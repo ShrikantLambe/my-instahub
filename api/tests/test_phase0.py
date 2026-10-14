@@ -7,6 +7,15 @@ async def test_health_reports_postgres(client):
     assert body["postgres"] == "ok"
 
 
+async def test_health_with_redis_disabled(client, monkeypatch):
+    from app.main import app
+
+    monkeypatch.setattr(app.state, "redis", None)
+    body = (await client.get("/health")).json()
+    assert body["redis"] == "disabled"
+    assert body["status"] == "ok"
+
+
 async def test_seeded_posts_newest_first(client):
     posts = (await client.get("/posts")).json()
     assert len(posts) == 3

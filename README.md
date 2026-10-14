@@ -48,7 +48,7 @@ Until the API is hosted, the deployed site shows a "Can't reach the API" page in
 
 1. **Supabase:** create a free project. In Connect → Connection string, copy the **Session pooler** URI (Render can't reach the IPv6-only direct connection) and fill in your DB password.
 2. **Render:** New → Blueprint, pick this repo. It reads `render.yaml` and creates `instahub-api`. When prompted, set `DATABASE_URL` to the Supabase URI and `CORS_ORIGINS` to your Vercel URL; leave `REDIS_URL` blank for now.
-3. On boot the API runs migrations and seeds the demo users, then serves on `https://<service>.onrender.com`. Check `/health`.
+3. On boot the API runs migrations and seeds the demo users, then serves on `https://<service>.onrender.com`. Check `/health`: expect `"postgres":"ok"` and, with `REDIS_URL` blank, `"redis":"disabled"`.
 4. **Vercel:** set `NEXT_PUBLIC_API_URL` to that Render URL and **redeploy** (the value is baked in at build time).
 
 The free Render instance sleeps after 15 idle minutes and takes about a minute to wake, so the first page load after a break may show the error page; refresh once it's up.

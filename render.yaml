@@ -16,6 +16,6 @@ services:
       - key: DATABASE_URL
         sync: false # Supabase session pooler connection string
       - key: REDIS_URL
-        sync: false # optional until Phase 4; leave blank to skip
+        sync: false # optional until Phase 4; leave blank to turn Redis off
       - key: CORS_ORIGINS
         sync: false # e.g. https://my-instahub.vercel.app
