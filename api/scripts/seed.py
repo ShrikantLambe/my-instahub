@@ -37,7 +37,7 @@ POSTS = {
 
 
 async def seed(dsn: str) -> None:
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(dsn, statement_cache_size=0)
     try:
         async with conn.transaction():
             await conn.executemany(

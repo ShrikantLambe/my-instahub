@@ -7,7 +7,11 @@ _pool: asyncpg.Pool | None = None
 
 async def open_pool(dsn: str | None = None) -> asyncpg.Pool:
     global _pool
-    _pool = await asyncpg.create_pool(dsn or settings.database_url, min_size=1, max_size=10)
+    # statement_cache_size=0 keeps asyncpg compatible with Supabase's pgbouncer pooler,
+    # which doesn't support server-side prepared statements across connections.
+    _pool = await asyncpg.create_pool(
+        dsn or settings.database_url, min_size=1, max_size=10, statement_cache_size=0
+    )
     return _pool
 
 
