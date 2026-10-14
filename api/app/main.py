@@ -12,9 +12,13 @@ from app.schemas import Post, User
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.open_pool()
-    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    # Redis is optional until Phase 4: an empty REDIS_URL turns it off.
+    app.state.redis = (
+        aioredis.from_url(settings.redis_url, decode_responses=True) if settings.redis_url else None
+    )
     yield
-    await app.state.redis.aclose()
+    if app.state.redis is not None:
+        await app.state.redis.aclose()
     await db.close_pool()
 
 
@@ -41,12 +45,15 @@ async def health() -> dict:
         checks["postgres"] = "ok"
     except Exception as exc:  # report, don't crash, so the health check stays useful
         checks["postgres"] = f"error: {exc}"
-    try:
-        await app.state.redis.ping()
-        checks["redis"] = "ok"
-    except Exception as exc:
-        checks["redis"] = f"error: {exc}"
-    status = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
+    if app.state.redis is None:
+        checks["redis"] = "disabled"
+    else:
+        try:
+            await app.state.redis.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = f"error: {exc}"
+    status = "ok" if all(v in ("ok", "disabled") for v in checks.values()) else "degraded"
     return {"status": status, **checks}
 
 
