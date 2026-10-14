@@ -39,7 +39,7 @@ Configuration comes from env vars; see [.env.example](.env.example).
 
 The Next.js app lives in `web/`, not at the repo root, so the Vercel project needs:
 
-- **Root Directory:** `web` (Project Settings → Build and Deployment). Framework preset: Next.js.
+- **Root Directory:** `web` (Project Settings → Build and Deployment). `web/vercel.json` pins the framework to Next.js, so the dashboard's Framework Preset doesn't matter.
 - **Environment variable:** `NEXT_PUBLIC_API_URL` set to the deployed API's URL.
 
 Until the API is hosted (Phase 5: Render + Supabase), the deployed site shows a "Can't reach the API" page instead of the feed.
