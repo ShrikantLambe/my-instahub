@@ -22,6 +22,7 @@ Prerequisites: Docker, [uv](https://docs.astral.sh/uv/), Node 20+.
 
 ```bash
 make up            # Postgres + Redis
+cp .env.example api/.env   # local settings, including REDIS_URL
 make api-install   # Python deps into api/.venv
 make migrate       # create tables
 make seed          # users alice (A), bob (B), carol (C) with follows and sample posts
