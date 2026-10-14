@@ -1,0 +1,21 @@
+# Render Blueprint for the API (design.md Phase 5). Database is Supabase Postgres.
+services:
+  - type: web
+    name: instahub-api
+    runtime: python
+    plan: free
+    rootDir: api
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    # Free instances have no pre-deploy step, so migrations and the demo seed run on boot.
+    # Both are idempotent, so restarts are safe.
+    startCommand: .venv/bin/python -m scripts.migrate && .venv/bin/python -m scripts.seed && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: DATABASE_URL
+        sync: false # Supabase session pooler connection string
+      - key: REDIS_URL
+        sync: false # optional until Phase 4; leave blank to skip
+      - key: CORS_ORIGINS
+        sync: false # e.g. https://my-instahub.vercel.app

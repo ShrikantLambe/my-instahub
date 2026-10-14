@@ -16,7 +16,7 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 
 async def migrate(dsn: str) -> list[str]:
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(dsn, statement_cache_size=0)
     try:
         await conn.execute(
             """
