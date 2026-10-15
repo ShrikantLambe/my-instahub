@@ -9,10 +9,10 @@ import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, storage
-from app.auth import current_user_id
+from app import db, likes, storage
+from app.auth import current_user_id, optional_user_id
 from app.config import settings
-from app.schemas import Post, PostIn, Profile, ProfileIn, UploadIn, UploadOut, User
+from app.schemas import LikeOut, Post, PostIn, Profile, ProfileIn, UploadIn, UploadOut, User
 
 
 @asynccontextmanager
@@ -63,8 +63,20 @@ async def health() -> dict:
     return {"status": status, **checks}
 
 
+async def with_viewer_likes(posts: list[Post], viewer_id: UUID | None) -> list[Post]:
+    """Fill viewer_has_liked for a page of posts with one batched query."""
+    if viewer_id is None or not posts:
+        return posts
+    liked = await likes.liked_post_ids(db.get_pool(), viewer_id, [p.id for p in posts])
+    for p in posts:
+        p.viewer_has_liked = p.id in liked
+    return posts
+
+
 @app.get("/posts", response_model=list[Post])
-async def list_posts(limit: int = Query(20, ge=1, le=50)) -> list[Post]:
+async def list_posts(
+    limit: int = Query(20, ge=1, le=50), viewer_id: UUID | None = Depends(optional_user_id)
+) -> list[Post]:
     """Latest posts from everyone. Phase 3 replaces this with the follow-based feed."""
     rows = await db.get_pool().fetch(
         f"""
@@ -75,7 +87,7 @@ async def list_posts(limit: int = Query(20, ge=1, le=50)) -> list[Post]:
         """,
         limit,
     )
-    return [Post.from_row(r) for r in rows]
+    return await with_viewer_likes([Post.from_row(r) for r in rows], viewer_id)
 
 
 async def fetch_post(post_id: int) -> Post | None:
@@ -87,11 +99,11 @@ async def fetch_post(post_id: int) -> Post | None:
 
 
 @app.get("/posts/{post_id}", response_model=Post)
-async def get_post(post_id: int) -> Post:
+async def get_post(post_id: int, viewer_id: UUID | None = Depends(optional_user_id)) -> Post:
     post = await fetch_post(post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="post not found")
-    return post
+    return (await with_viewer_likes([post], viewer_id))[0]
 
 
 @app.get("/users/{username}", response_model=User)
@@ -112,7 +124,11 @@ async def get_user(username: str) -> User:
 
 
 @app.get("/users/{username}/posts", response_model=list[Post])
-async def list_user_posts(username: str, limit: int = Query(30, ge=1, le=60)) -> list[Post]:
+async def list_user_posts(
+    username: str,
+    limit: int = Query(30, ge=1, le=60),
+    viewer_id: UUID | None = Depends(optional_user_id),
+) -> list[Post]:
     """A user's posts, newest first: the profile grid."""
     rows = await db.get_pool().fetch(
         f"""
@@ -125,7 +141,7 @@ async def list_user_posts(username: str, limit: int = Query(30, ge=1, le=60)) ->
         username,
         limit,
     )
-    return [Post.from_row(r) for r in rows]
+    return await with_viewer_likes([Post.from_row(r) for r in rows], viewer_id)
 
 
 # --- Signed-in endpoints. The user id always comes from the verified token. ---
@@ -197,3 +213,25 @@ async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) ->
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=409, detail="create your profile first") from None
     return await fetch_post(post_id)
+
+
+@app.post("/posts/{post_id}/like", response_model=LikeOut)
+async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
+    """Idempotent: liking an already-liked post returns the current count unchanged."""
+    try:
+        count = await likes.like(db.get_pool(), post_id, user_id)
+    except likes.PostNotFound:
+        raise HTTPException(status_code=404, detail="post not found") from None
+    except likes.NoProfile:
+        raise HTTPException(status_code=409, detail="create your profile first") from None
+    return LikeOut(post_id=post_id, liked=True, like_count=count)
+
+
+@app.delete("/posts/{post_id}/like", response_model=LikeOut)
+async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
+    """Idempotent mirror of like: removing a like that isn't there changes nothing."""
+    try:
+        count = await likes.unlike(db.get_pool(), post_id, user_id)
+    except likes.PostNotFound:
+        raise HTTPException(status_code=404, detail="post not found") from None
+    return LikeOut(post_id=post_id, liked=False, like_count=count)

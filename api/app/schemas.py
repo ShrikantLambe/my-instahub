@@ -23,6 +23,7 @@ class Post(BaseModel):
     image_key: str
     image_url: str
     like_count: int
+    viewer_has_liked: bool = False  # always False for anonymous viewers
     created_at: datetime
 
     @classmethod
@@ -92,3 +93,9 @@ class UploadOut(BaseModel):
 class PostIn(BaseModel):
     image_key: str
     caption: str | None = Field(default=None, max_length=2200)  # Instagram's limit
+
+
+class LikeOut(BaseModel):
+    post_id: int
+    liked: bool
+    like_count: int
