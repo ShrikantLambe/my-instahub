@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { getPosts, getUser } from "@/lib/api";
+import { getUser, getUserPosts } from "@/lib/api";
+import { PostImage } from "../../PostImage";
 
 export const dynamic = "force-dynamic";
 
@@ -7,8 +8,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ userna
   const { username } = await params;
   const user = await getUser(username);
   if (!user) notFound();
-  // Phase 1 adds a per-user posts endpoint; for now filter the global list.
-  const posts = (await getPosts()).filter((p) => p.author.username === user.username);
+  const posts = await getUserPosts(user.username);
 
   return (
     <section>
@@ -23,9 +23,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ userna
       </header>
       <div className="grid">
         {posts.map((p) => (
-          <div key={p.id} className="photo" title={p.caption ?? ""}>
-            {p.caption}
-          </div>
+          <PostImage key={p.id} src={p.image_url} alt={p.caption ?? `Photo by @${user.username}`} />
         ))}
       </div>
     </section>

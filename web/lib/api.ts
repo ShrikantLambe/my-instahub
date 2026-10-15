@@ -9,6 +9,7 @@ export type Post = {
   author: Author;
   caption: string | null;
   image_key: string;
+  image_url: string;
   like_count: number;
   created_at: string;
 };
@@ -24,6 +25,19 @@ export type User = {
   following_count: number;
 };
 
+export type Profile = { id: string; username: string; display_name: string | null };
+
+export type Upload = { upload_url: string; key: string; expires_in: number };
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 async function get<T>(path: string): Promise<T | null> {
   const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
   if (res.status === 404) return null;
@@ -33,3 +47,28 @@ async function get<T>(path: string): Promise<T | null> {
 
 export const getPosts = async () => (await get<Post[]>("/posts")) ?? [];
 export const getUser = (username: string) => get<User>(`/users/${encodeURIComponent(username)}`);
+export const getUserPosts = async (username: string) =>
+  (await get<Post[]>(`/users/${encodeURIComponent(username)}/posts`)) ?? [];
+
+// FastAPI errors are {detail: string} or, for validation, {detail: [{msg}, ...]}.
+function errorMessage(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d) => d?.msg ?? String(d)).join("; ");
+  return `Request failed (${status})`;
+}
+
+// Signed-in calls: the Supabase access token is the only proof of who the user is.
+export async function apiFetch<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      ...init.headers,
+    },
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(res.status, errorMessage(body, res.status));
+  return body as T;
+}

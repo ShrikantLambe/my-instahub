@@ -13,7 +13,7 @@ api/            FastAPI service (Python, uv)
   scripts/      migrate.py, seed.py
   tests/        pytest against a real Postgres
 web/            Next.js app (App Router, TypeScript)
-docker-compose.yml   local Postgres 16 + Redis 7
+docker-compose.yml   local Postgres 16, Redis 7 and an S3 stand-in (moto) for R2
 ```
 
 ## Run it locally
@@ -21,8 +21,8 @@ docker-compose.yml   local Postgres 16 + Redis 7
 Prerequisites: Docker, [uv](https://docs.astral.sh/uv/), Node 20+.
 
 ```bash
-make up            # Postgres + Redis
-cp .env.example api/.env   # local settings, including REDIS_URL
+cp .env.example api/.env   # API settings (also copy the web lines to web/.env.local)
+make up            # Postgres, Redis and local S3, plus the bucket
 make api-install   # Python deps into api/.venv
 make migrate       # create tables
 make seed          # users alice (A), bob (B), carol (C) with follows and sample posts
@@ -33,6 +33,8 @@ make web           # http://localhost:3000
 ```
 
 `make test` runs the API tests in a throwaway `instahub_test` database. `make reset` wipes the DB volume and re-seeds.
+
+Login uses your Supabase project even locally: put its URL and publishable (anon) key in `web/.env.local` and its URL in `api/.env`. Local photos live in the moto container's memory, so they disappear if it restarts; run `make bucket` to recreate the bucket.
 
 Configuration comes from env vars; see [.env.example](.env.example).
 
@@ -52,6 +54,23 @@ Until the API is hosted, the deployed site shows a "Can't reach the API" page in
 3. On boot the API runs migrations and seeds the demo users, then serves on `https://<service>.onrender.com`. Check `/health`: expect `"postgres":"ok"` and, with `REDIS_URL` blank, `"redis":"disabled"`.
 4. **Vercel:** set `NEXT_PUBLIC_API_URL` to that Render URL and **redeploy** (the value is baked in at build time).
 
+### Login and photos (Phase 1)
+
+**Supabase Auth.** In Supabase → Authentication → URL Configuration, set **Site URL** to your Vercel URL. For a quick demo, turn off **Confirm email** under Authentication → Sign In / Providers → Email, or new users must click the emailed link before logging in.
+
+**Cloudflare R2.**
+1. R2 → Create bucket (e.g. `instahub`).
+2. Bucket → Settings → **Public Development URL** → Allow. That `https://pub-….r2.dev` URL is `IMAGE_BASE_URL`.
+3. Bucket → Settings → **CORS policy**, so browsers can upload with presigned URLs:
+   ```json
+   [{"AllowedOrigins": ["https://<your-app>.vercel.app", "http://localhost:3000"],
+     "AllowedMethods": ["PUT", "GET"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 3600}]
+   ```
+4. R2 → **Manage API tokens** → Create token with **Object Read & Write** on that bucket. Note the Access Key ID, Secret Access Key and the S3 endpoint `https://<account-id>.r2.cloudflarestorage.com`.
+
+**Render env vars:** `SUPABASE_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET`, `IMAGE_BASE_URL` (plus `SUPABASE_JWT_SECRET` only if your project still uses the legacy JWT secret).
+**Vercel env vars:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, then redeploy.
+
 The free Render instance sleeps after 15 idle minutes and takes about a minute to wake, so the first page load after a break may show the error page; refresh once it's up.
 
 ## Status
@@ -59,11 +78,11 @@ The free Render instance sleeps after 15 idle minutes and takes about a minute t
 | Phase | What | State |
 | --- | --- | --- |
 | 0 | Local skeleton: compose, FastAPI, Next.js, migrations, seed | ✅ done |
-| 1 | Supabase Auth, JWT check, presigned R2 uploads, create post | next |
-| 2 | Idempotent like/unlike, `viewer_has_liked`, optimistic UI | |
+| 1 | Supabase Auth, JWT check, presigned R2 uploads, create post | ✅ done |
+| 2 | Idempotent like/unlike, `viewer_has_liked`, optimistic UI | next |
 | 3 | Follow/unfollow, home feed with cursor pagination | |
 | 4 | Redis cache-aside, pub/sub, SSE live counts | |
 | 5 | Deploy: Vercel, Render, Supabase, Upstash, R2 | |
 | 6 | Load-test a hot post, Redis-buffered counter | |
 
-Phase 0 endpoints: `GET /health`, `GET /posts`, `GET /posts/{id}`, `GET /users/{username}`. Posts use placeholder image keys until uploads land in Phase 1.
+Endpoints: `GET /health`, `GET /posts`, `GET /posts/{id}`, `GET /users/{username}`, `GET /users/{username}/posts`; signed in: `GET/PUT /me`, `POST /uploads`, `POST /posts`. The seed posts point at sample image keys that don't exist, so they show a placeholder tile.

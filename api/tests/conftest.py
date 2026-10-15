@@ -15,7 +15,14 @@ ADMIN_URL = os.environ.get(
 )
 TEST_DB = "instahub_test"
 TEST_URL = ADMIN_URL.rsplit("/", 1)[0] + f"/{TEST_DB}"
-os.environ["DATABASE_URL"] = TEST_URL  # must be set before app.config is imported
+# Must be set before app.config is imported.
+os.environ["DATABASE_URL"] = TEST_URL
+os.environ["SUPABASE_URL"] = ""
+os.environ["SUPABASE_JWT_SECRET"] = "test-secret-at-least-32-bytes-long!!"
+os.environ["S3_ENDPOINT"] = "https://s3.amazonaws.com"  # moto intercepts AWS endpoints
+os.environ["S3_REGION"] = "us-east-1"
+os.environ["S3_BUCKET"] = "instahub-test"
+os.environ["IMAGE_BASE_URL"] = "https://cdn.example/instahub"
 
 
 @pytest.fixture(scope="session")
