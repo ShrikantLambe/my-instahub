@@ -79,10 +79,10 @@ The free Render instance sleeps after 15 idle minutes and takes about a minute t
 | --- | --- | --- |
 | 0 | Local skeleton: compose, FastAPI, Next.js, migrations, seed | ✅ done |
 | 1 | Supabase Auth, JWT check, presigned R2 uploads, create post | ✅ done |
-| 2 | Idempotent like/unlike, `viewer_has_liked`, optimistic UI | next |
-| 3 | Follow/unfollow, home feed with cursor pagination | |
+| 2 | Idempotent like/unlike, `viewer_has_liked`, optimistic UI | ✅ done |
+| 3 | Follow/unfollow, home feed with cursor pagination | next |
 | 4 | Redis cache-aside, pub/sub, SSE live counts | |
 | 5 | Deploy: Vercel, Render, Supabase, Upstash, R2 | |
 | 6 | Load-test a hot post, Redis-buffered counter | |
 
-Endpoints: `GET /health`, `GET /posts`, `GET /posts/{id}`, `GET /users/{username}`, `GET /users/{username}/posts`; signed in: `GET/PUT /me`, `POST /uploads`, `POST /posts`. The seed posts point at sample image keys that don't exist, so they show a placeholder tile.
+Endpoints: `GET /health`, `GET /posts`, `GET /posts/{id}`, `GET /users/{username}`, `GET /users/{username}/posts`; signed in: `GET/PUT /me`, `POST /uploads`, `POST /posts`, `POST/DELETE /posts/{id}/like`. Read endpoints also accept a token and then fill `viewer_has_liked`. The seed posts point at sample image keys that don't exist, so they show a placeholder tile.

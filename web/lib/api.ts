@@ -11,6 +11,7 @@ export type Post = {
   image_key: string;
   image_url: string;
   like_count: number;
+  viewer_has_liked: boolean;
   created_at: string;
 };
 
@@ -29,6 +30,8 @@ export type Profile = { id: string; username: string; display_name: string | nul
 
 export type Upload = { upload_url: string; key: string; expires_in: number };
 
+export type LikeResult = { post_id: number; liked: boolean; like_count: number };
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -46,6 +49,7 @@ async function get<T>(path: string): Promise<T | null> {
 }
 
 export const getPosts = async () => (await get<Post[]>("/posts")) ?? [];
+export const getPost = (id: string) => get<Post>(`/posts/${encodeURIComponent(id)}`);
 export const getUser = (username: string) => get<User>(`/users/${encodeURIComponent(username)}`);
 export const getUserPosts = async (username: string) =>
   (await get<Post[]>(`/users/${encodeURIComponent(username)}/posts`)) ?? [];

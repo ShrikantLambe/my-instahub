@@ -68,3 +68,20 @@ async def current_user_id(
         return UUID(claims["sub"])
     except (jwt.PyJWTError, ValueError):
         raise unauthorized from None
+
+
+async def optional_user_id(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> UUID | None:
+    """For public reads that add per-viewer fields (e.g. viewer_has_liked).
+
+    A missing or invalid token just means "anonymous viewer": the page still renders,
+    and only the personalised fields are left at their defaults.
+    """
+    if creds is None:
+        return None
+    try:
+        claims = await decode_token(creds.credentials)
+        return UUID(claims["sub"])
+    except (jwt.PyJWTError, ValueError):
+        return None
