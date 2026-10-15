@@ -62,7 +62,10 @@ class Broker:
         try:
             await self.redis.publish(CHANNEL, json.dumps(event))
         except Exception:
-            log.warning("publish to %s failed", CHANNEL, exc_info=True)
+            # Redis is down: still reach the viewers connected to this instance. If Redis
+            # delivers it as well later, the duplicate is harmless (counts are versioned).
+            log.warning("publish to %s failed; delivering locally", CHANNEL, exc_info=True)
+            self._deliver(event)
 
     def _deliver(self, event: dict) -> None:
         for sub in list(self._subs):

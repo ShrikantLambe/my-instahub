@@ -199,3 +199,46 @@ async def test_sse_stream_snapshot_then_live(live_server, client, post_id, make_
             await client.post(f"/posts/{post_id}/like", headers=auth_header(liker))
             live = await asyncio.wait_for(read_events(lines, 1), timeout=5)
             assert live == [("likes", {"post_id": post_id, "like_count": 1, "like_version": 1})]
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("redis://default:pw@fond-cat-123.upstash.io:6379", "rediss://default:pw@fond-cat-123.upstash.io:6379"),
+        ("rediss://default:pw@fond-cat-123.upstash.io:6379", "rediss://default:pw@fond-cat-123.upstash.io:6379"),
+        (" redis://localhost:6379/0 ", "redis://localhost:6379/0"),  # local Redis has no TLS
+        ("", ""),
+    ],
+)
+def test_upstash_url_gets_tls(raw, expected):
+    from app.config import Settings
+
+    assert Settings(redis_url=raw).redis_url == expected
+
+
+async def test_broken_redis_still_delivers_live_updates_locally():
+    """If Redis is configured but failing, viewers on this instance still get updates."""
+    dead = aioredis.from_url("redis://127.0.0.1:1/0", socket_connect_timeout=0.2)
+    b = Broker()
+    b.redis = dead  # configured, but unreachable (don't start the listener)
+    sub = b.subscribe({7})
+    await b.publish({"post_id": 7, "like_count": 3, "like_version": 5})
+    assert sub.queue.get_nowait() == {"post_id": 7, "like_count": 3, "like_version": 5}
+    await dead.aclose()
+
+
+async def test_dropped_redis_connection_reconnects():
+    """Upstash closes idle connections; the next command must reconnect, not fail."""
+    from app.main import make_redis
+
+    url = os.environ["REDIS_URL"]
+    r, admin = make_redis(url), aioredis.from_url(url)
+    try:
+        assert await r.ping()
+        my_id = await r.client_id()
+        await admin.execute_command("CLIENT", "KILL", "ID", my_id)  # server drops our connection
+        assert await r.ping()  # retried on a fresh connection
+        assert await r.client_id() != my_id
+    finally:
+        await r.aclose()
+        await admin.aclose()
