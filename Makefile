@@ -1,7 +1,11 @@
-.PHONY: up down api-install migrate seed api test web-install web reset
+.PHONY: up down bucket api-install migrate seed api test web-install web reset
 
-up:            ## Start Postgres + Redis
+up:            ## Start Postgres, Redis and the local S3 (moto), then create the bucket
 	docker compose up -d --wait
+	$(MAKE) bucket
+
+bucket:        ## Create the local bucket with CORS + public read (re-run if the s3 container restarts)
+	cd api && uv run python -m scripts.setup_local_bucket
 
 down:          ## Stop Postgres + Redis
 	docker compose down

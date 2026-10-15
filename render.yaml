@@ -19,3 +19,19 @@ services:
         sync: false # optional until Phase 4; leave blank to turn Redis off
       - key: CORS_ORIGINS
         sync: false # e.g. https://my-instahub.vercel.app
+      - key: SUPABASE_URL
+        sync: false # https://<project-ref>.supabase.co
+      - key: SUPABASE_JWT_SECRET
+        sync: false # only for projects on the legacy JWT secret; else leave blank
+      - key: S3_ENDPOINT
+        sync: false # https://<account-id>.r2.cloudflarestorage.com
+      - key: S3_REGION
+        value: auto # R2's region name
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BUCKET
+        sync: false # e.g. instahub
+      - key: IMAGE_BASE_URL
+        sync: false # bucket's public URL, e.g. https://pub-xxxx.r2.dev

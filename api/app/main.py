@@ -1,12 +1,18 @@
+import re
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from uuid import UUID
 
+import asyncpg
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db
+from app import db, storage
+from app.auth import current_user_id
 from app.config import settings
-from app.schemas import Post, User
+from app.schemas import Post, PostIn, Profile, ProfileIn, UploadIn, UploadOut, User
 
 
 @asynccontextmanager
@@ -72,15 +78,20 @@ async def list_posts(limit: int = Query(20, ge=1, le=50)) -> list[Post]:
     return [Post.from_row(r) for r in rows]
 
 
-@app.get("/posts/{post_id}", response_model=Post)
-async def get_post(post_id: int) -> Post:
+async def fetch_post(post_id: int) -> Post | None:
     row = await db.get_pool().fetchrow(
         f"SELECT {POST_COLUMNS} FROM posts p JOIN users u ON u.id = p.author_id WHERE p.id = $1",
         post_id,
     )
-    if row is None:
+    return Post.from_row(row) if row else None
+
+
+@app.get("/posts/{post_id}", response_model=Post)
+async def get_post(post_id: int) -> Post:
+    post = await fetch_post(post_id)
+    if post is None:
         raise HTTPException(status_code=404, detail="post not found")
-    return Post.from_row(row)
+    return post
 
 
 @app.get("/users/{username}", response_model=User)
@@ -98,3 +109,91 @@ async def get_user(username: str) -> User:
     if row is None:
         raise HTTPException(status_code=404, detail="user not found")
     return User(**dict(row))
+
+
+@app.get("/users/{username}/posts", response_model=list[Post])
+async def list_user_posts(username: str, limit: int = Query(30, ge=1, le=60)) -> list[Post]:
+    """A user's posts, newest first: the profile grid."""
+    rows = await db.get_pool().fetch(
+        f"""
+        SELECT {POST_COLUMNS}
+        FROM posts p JOIN users u ON u.id = p.author_id
+        WHERE u.username = $1
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT $2
+        """,
+        username,
+        limit,
+    )
+    return [Post.from_row(r) for r in rows]
+
+
+# --- Signed-in endpoints. The user id always comes from the verified token. ---
+
+
+@app.get("/me", response_model=Profile)
+async def get_me(user_id: UUID = Depends(current_user_id)) -> Profile:
+    row = await db.get_pool().fetchrow(
+        "SELECT id, username, display_name FROM users WHERE id = $1", user_id
+    )
+    if row is None:
+        # Signed in with Supabase but no profile yet: the client sends them to pick a username.
+        raise HTTPException(status_code=404, detail="profile not found")
+    return Profile(**dict(row))
+
+
+@app.put("/me", response_model=Profile)
+async def put_me(body: ProfileIn, user_id: UUID = Depends(current_user_id)) -> Profile:
+    try:
+        row = await db.get_pool().fetchrow(
+            """
+            INSERT INTO users (id, username, display_name) VALUES ($1, $2, $3)
+            ON CONFLICT (id) DO UPDATE
+              SET username = EXCLUDED.username, display_name = EXCLUDED.display_name
+            RETURNING id, username, display_name
+            """,
+            user_id,
+            body.username,
+            body.display_name,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(status_code=409, detail="username is taken") from None
+    return Profile(**dict(row))
+
+
+@app.post("/uploads", response_model=UploadOut)
+async def create_upload(body: UploadIn, user_id: UUID = Depends(current_user_id)) -> UploadOut:
+    """Hand out a short-lived URL the browser PUTs the photo to, straight into the bucket."""
+    ext = storage.IMAGE_TYPES[body.content_type]
+    now = datetime.now(timezone.utc)
+    # Keys are namespaced by user so POST /posts can check the caller owns the upload.
+    key = f"posts/{user_id}/{now:%Y/%m}/{uuid.uuid4().hex}.{ext}"
+    return UploadOut(
+        upload_url=storage.presign_put(key, body.content_type),
+        key=key,
+        expires_in=settings.upload_url_ttl_seconds,
+    )
+
+
+def _owns_key(user_id: UUID, key: str) -> bool:
+    exts = "|".join(storage.IMAGE_TYPES.values())
+    pattern = rf"posts/{user_id}/\d{{4}}/\d{{2}}/[0-9a-f]{{32}}\.({exts})"
+    return re.fullmatch(pattern, key) is not None
+
+
+@app.post("/posts", response_model=Post, status_code=201)
+async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) -> Post:
+    if not _owns_key(user_id, body.image_key):
+        raise HTTPException(status_code=400, detail="image_key is not one of your uploads")
+    if not await storage.object_exists(body.image_key):
+        raise HTTPException(status_code=400, detail="upload not found; upload the photo first")
+    try:
+        post_id = await db.get_pool().fetchval(
+            "INSERT INTO posts (author_id, caption, image_key) VALUES ($1, $2, $3) RETURNING id",
+            user_id,
+            body.caption,
+            body.image_key,
+        )
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(status_code=409, detail="create your profile first") from None
+    return await fetch_post(post_id)

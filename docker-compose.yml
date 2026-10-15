@@ -1,4 +1,4 @@
-# Local dev stack: stands in for Supabase Postgres and Upstash Redis.
+# Local dev stack: stands in for Supabase Postgres, Upstash Redis and Cloudflare R2.
 services:
   postgres:
     image: postgres:16-alpine
@@ -25,6 +25,13 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  # S3-compatible stand-in for Cloudflare R2 (in-memory: objects vanish when it restarts).
+  # `make up` creates the bucket with the same CORS and public-read setup R2 needs.
+  s3:
+    image: motoserver/moto:5.2.3
+    ports:
+      - "9000:5000"
 
 volumes:
   pgdata:
