@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { apiFetch, type Post } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
 import { PostCard } from "./PostCard";
+import { useLiveCounts } from "./useLiveCounts";
 
 /**
  * Posts render straight from the server (fast, no login needed). Once we know who is
@@ -36,11 +37,23 @@ export function Feed({
     };
   }, [token, path, single]);
 
+  const { counts, status } = useLiveCounts(posts.map((p) => p.id));
+
   return (
     <section className="feed">
+      {single && <LiveBadge status={status} />}
       {posts.map((p) => (
-        <PostCard key={p.id} post={p} />
+        <PostCard key={p.id} post={p} live={counts[p.id]} />
       ))}
     </section>
+  );
+}
+
+function LiveBadge({ status }: { status: string }) {
+  const label = { live: "Live", connecting: "Connecting…", offline: "Offline" }[status] ?? status;
+  return (
+    <p className={`live-badge ${status}`} role="status">
+      <span aria-hidden="true">●</span> {label}
+    </p>
   );
 }

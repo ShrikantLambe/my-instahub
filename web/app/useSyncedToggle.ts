@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type State = { on: boolean; count: number };
+/** version: optional ordering for counts (likes have it; follows don't). */
+type State = { on: boolean; count: number; version?: number };
+type Live = { count: number; version: number };
+
+const newer = (a?: number, b?: number) => a === undefined || b === undefined || a >= b;
 
 /**
  * An on/off control with a count (like, follow), synced to the server optimistically.
@@ -12,14 +16,19 @@ type State = { on: boolean; count: number };
  * responses can't leave the control lying. If a request fails, the UI rolls back to
  * what the server last confirmed. The endpoints are idempotent, so a retried or
  * duplicated request can never count twice.
+ *
+ * `live` carries other people's changes to the count (e.g. from the SSE stream). It
+ * only ever moves the count, never your own on/off state, and anything older than the
+ * version already shown is ignored.
  */
 export function useSyncedToggle(
   initial: State,
   request: (want: boolean) => Promise<State>,
+  live?: Live,
 ) {
   const [on, setOn] = useState(initial.on);
   const [count, setCount] = useState(initial.count);
-  const server = useRef(initial);
+  const server = useRef<State>(initial);
   const desired = useRef(initial.on);
   const inFlight = useRef(false);
   const send = useRef(request);
@@ -27,12 +36,22 @@ export function useSyncedToggle(
 
   // Fresh data from the server (e.g. a re-fetch with the viewer's token).
   useEffect(() => {
-    if (inFlight.current) return;
-    server.current = { on: initial.on, count: initial.count };
+    if (inFlight.current || !newer(initial.version, server.current.version)) return;
+    server.current = { ...initial };
     desired.current = initial.on;
     setOn(initial.on);
     setCount(initial.count);
-  }, [initial.on, initial.count]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial.on, initial.count, initial.version]);
+
+  // Someone else's change arrived live: update the count only.
+  useEffect(() => {
+    if (!live) return;
+    const shown = server.current.version;
+    if (shown !== undefined && shown >= live.version) return; // stale or already applied
+    server.current = { ...server.current, count: live.count, version: live.version };
+    if (!inFlight.current && desired.current === server.current.on) setCount(live.count);
+  }, [live?.version, live?.count]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sync = useCallback(async () => {
     if (inFlight.current) return;
@@ -41,10 +60,13 @@ export function useSyncedToggle(
     inFlight.current = true;
     try {
       const res = await send.current(want);
-      server.current = res;
-      if (desired.current === res.on) {
-        setOn(res.on);
-        setCount(res.count); // the server's count, which includes everyone else's changes
+      // A live update may already have shown a newer count; keep it, take our on/off.
+      server.current = newer(res.version, server.current.version)
+        ? res
+        : { ...server.current, on: res.on };
+      if (desired.current === server.current.on) {
+        setOn(server.current.on);
+        setCount(server.current.count);
       }
     } catch {
       desired.current = server.current.on;

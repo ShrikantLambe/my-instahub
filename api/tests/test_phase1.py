@@ -130,9 +130,14 @@ async def test_create_post_end_to_end(client, s3):
     key = (await client.post("/uploads", json={"content_type": "image/jpeg"}, headers=headers)).json()["key"]
     s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=b"\xff\xd8fake-jpeg", ContentType="image/jpeg")
 
-    resp = await client.post("/posts", json={"image_key": key, "caption": "hello"}, headers=headers)
+    resp = await client.post(
+        "/posts",
+        json={"image_key": key, "caption": "hello", "image_width": 1600, "image_height": 900},
+        headers=headers,
+    )
     assert resp.status_code == 201, resp.text
     post = resp.json()
+    assert (post["image_width"], post["image_height"]) == (1600, 900)
     assert post["author"]["username"] == "erin"
     assert post["image_url"] == f"https://cdn.example/instahub/{key}"
     assert post["like_count"] == 0
@@ -185,3 +190,15 @@ def test_supabase_url_keeps_only_origin(raw):
     from app.config import Settings
 
     assert Settings(supabase_url=raw).supabase_url == "https://abc.supabase.co"
+
+
+async def test_image_size_is_optional_but_validated(client, s3):
+    user_id = await make_profile(client, "gina")
+    headers = auth_header(user_id)
+    for body, status in [({}, 201), ({"image_width": 0, "image_height": 10}, 422)]:
+        key = (await client.post("/uploads", json={"content_type": "image/png"}, headers=headers)).json()["key"]
+        s3.put_object(Bucket=settings.s3_bucket, Key=key, Body=b"x")
+        resp = await client.post("/posts", json={"image_key": key, **body}, headers=headers)
+        assert resp.status_code == status, resp.text
+        if status == 201:
+            assert resp.json()["image_width"] is None

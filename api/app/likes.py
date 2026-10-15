@@ -6,9 +6,15 @@ so a double-tap or a retried request can never inflate the count. The counter on
 moves when a row was actually inserted or deleted, inside the same statement.
 """
 
+from typing import NamedTuple
 from uuid import UUID
 
 import asyncpg
+
+
+class LikeCount(NamedTuple):
+    count: int
+    version: int  # posts.like_version: increases with every change to the count
 
 LIKE_SQL = """
 WITH ins AS (
@@ -16,9 +22,9 @@ WITH ins AS (
   ON CONFLICT DO NOTHING
   RETURNING 1
 )
-UPDATE posts SET like_count = like_count + 1
+UPDATE posts SET like_count = like_count + 1, like_version = like_version + 1
 WHERE id = $1 AND EXISTS (SELECT 1 FROM ins)
-RETURNING like_count
+RETURNING like_count, like_version
 """
 
 UNLIKE_SQL = """
@@ -26,9 +32,9 @@ WITH del AS (
   DELETE FROM likes WHERE post_id = $1 AND user_id = $2
   RETURNING 1
 )
-UPDATE posts SET like_count = like_count - 1
+UPDATE posts SET like_count = like_count - 1, like_version = like_version + 1
 WHERE id = $1 AND EXISTS (SELECT 1 FROM del)
-RETURNING like_count
+RETURNING like_count, like_version
 """
 
 
@@ -40,31 +46,35 @@ class NoProfile(Exception):
     """Signed in, but no users row yet (username not chosen)."""
 
 
-async def _current_count(conn: asyncpg.Connection, post_id: int) -> int:
-    count = await conn.fetchval("SELECT like_count FROM posts WHERE id = $1", post_id)
-    if count is None:
+async def _current_count(conn: asyncpg.Connection, post_id: int) -> LikeCount:
+    row = await conn.fetchrow("SELECT like_count, like_version FROM posts WHERE id = $1", post_id)
+    if row is None:
         raise PostNotFound(post_id)
-    return count
+    return LikeCount(row["like_count"], row["like_version"])
 
 
-async def like(pool: asyncpg.Pool, post_id: int, user_id: UUID) -> int:
-    """Like a post; returns the new count. Liking twice changes nothing."""
+async def like(pool: asyncpg.Pool, post_id: int, user_id: UUID) -> tuple[LikeCount, bool]:
+    """Like a post. Returns (count, changed); liking twice changes nothing."""
     async with pool.acquire() as conn:
         try:
-            count = await conn.fetchval(LIKE_SQL, post_id, user_id)
+            row = await conn.fetchrow(LIKE_SQL, post_id, user_id)
         except asyncpg.ForeignKeyViolationError as exc:
             if exc.constraint_name == "likes_user_id_fkey":
                 raise NoProfile(user_id) from None
             raise PostNotFound(post_id) from None
         # No row back: this user had already liked it. Report the count, change nothing.
-        return count if count is not None else await _current_count(conn, post_id)
+        if row is None:
+            return await _current_count(conn, post_id), False
+        return LikeCount(row["like_count"], row["like_version"]), True
 
 
-async def unlike(pool: asyncpg.Pool, post_id: int, user_id: UUID) -> int:
-    """Remove a like; returns the new count. Unliking twice changes nothing."""
+async def unlike(pool: asyncpg.Pool, post_id: int, user_id: UUID) -> tuple[LikeCount, bool]:
+    """Remove a like. Returns (count, changed); unliking twice changes nothing."""
     async with pool.acquire() as conn:
-        count = await conn.fetchval(UNLIKE_SQL, post_id, user_id)
-        return count if count is not None else await _current_count(conn, post_id)
+        row = await conn.fetchrow(UNLIKE_SQL, post_id, user_id)
+        if row is None:
+            return await _current_count(conn, post_id), False
+        return LikeCount(row["like_count"], row["like_version"]), True
 
 
 async def liked_post_ids(pool: asyncpg.Pool, user_id: UUID, post_ids: list[int]) -> set[int]:

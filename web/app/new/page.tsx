@@ -4,9 +4,23 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiFetch, type Post, type Upload } from "@/lib/api";
 import { useAuth } from "../AuthProvider";
+import { PostImage } from "../PostImage";
 
 const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
 const MAX_BYTES = 10 * 1024 * 1024;
+
+// Pixel size of the chosen photo, sent with the post so the feed can lay it out
+// at the right shape before it loads.
+async function imageSize(file: File): Promise<{ width: number; height: number } | null> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const size = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return size;
+  } catch {
+    return null; // unreadable here; the feed will measure it on load instead
+  }
+}
 
 export default function NewPostPage() {
   const router = useRouter();
@@ -62,9 +76,15 @@ export default function NewPostPage() {
       if (!put.ok) throw new Error(`Upload failed (${put.status})`);
       // 3. Create the post pointing at the uploaded object.
       setStatus("Posting…");
+      const size = await imageSize(file);
       await apiFetch<Post>("/posts", token, {
         method: "POST",
-        body: JSON.stringify({ image_key: upload.key, caption: caption || null }),
+        body: JSON.stringify({
+          image_key: upload.key,
+          caption: caption || null,
+          image_width: size?.width ?? null,
+          image_height: size?.height ?? null,
+        }),
       });
       router.push("/");
       router.refresh();
@@ -81,10 +101,7 @@ export default function NewPostPage() {
         Photo
         <input type="file" accept={ACCEPTED.join(",")} required onChange={onPick} />
       </label>
-      {preview && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img className="photo" src={preview} alt="Preview of the selected photo" />
-      )}
+      {preview && <PostImage src={preview} alt="Preview of the selected photo" shape="natural" />}
       <label>
         Caption
         <textarea maxLength={2200} rows={3} value={caption} onChange={(e) => setCaption(e.target.value)} />

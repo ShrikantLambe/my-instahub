@@ -10,7 +10,10 @@ export type Post = {
   caption: string | null;
   image_key: string;
   image_url: string;
+  image_width: number | null;
+  image_height: number | null;
   like_count: number;
+  like_version: number;
   viewer_has_liked: boolean;
   created_at: string;
 };
@@ -31,7 +34,7 @@ export type Profile = { id: string; username: string; display_name: string | nul
 
 export type Upload = { upload_url: string; key: string; expires_in: number };
 
-export type LikeResult = { post_id: number; liked: boolean; like_count: number };
+export type LikeResult = { post_id: number; liked: boolean; like_count: number; like_version: number };
 
 export type FollowResult = { username: string; following: boolean; follower_count: number };
 

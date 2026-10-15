@@ -3,20 +3,22 @@
 import { useRouter } from "next/navigation";
 import { apiFetch, type LikeResult, type Post } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
+import type { LiveCount } from "./useLiveCounts";
 import { useSyncedToggle } from "./useSyncedToggle";
 
 // Optimistic like state for one post; see useSyncedToggle for the sync rules.
-export function useLike(post: Post) {
+export function useLike(post: Post, live?: LiveCount) {
   const router = useRouter();
   const { session, profile } = useAuth();
   const { on, count, set, toggle } = useSyncedToggle(
-    { on: post.viewer_has_liked, count: post.like_count },
+    { on: post.viewer_has_liked, count: post.like_count, version: post.like_version },
     async (want) => {
       const res = await apiFetch<LikeResult>(`/posts/${post.id}/like`, session!.access_token, {
         method: want ? "POST" : "DELETE",
       });
-      return { on: res.liked, count: res.like_count };
+      return { on: res.liked, count: res.like_count, version: res.like_version };
     },
+    live,
   );
 
   // Signed out or no username yet: send them where they can fix that instead.
