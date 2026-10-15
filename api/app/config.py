@@ -1,3 +1,6 @@
+from urllib.parse import urlsplit
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +27,17 @@ class Settings(BaseSettings):
     # Public base URL that serves objects by key (R2 public URL or custom domain).
     image_base_url: str = "http://localhost:9000/instahub"
     upload_url_ttl_seconds: int = 300
+
+    @field_validator("supabase_url")
+    @classmethod
+    def project_origin(cls, v: str) -> str:
+        """Keep only scheme://host, so a pasted ".../rest/v1/" still yields the right
+        JWKS URL and token issuer."""
+        v = v.strip()
+        if not v:
+            return v
+        parts = urlsplit(v)
+        return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else v.rstrip("/")
 
     @property
     def cors_origin_list(self) -> list[str]:
