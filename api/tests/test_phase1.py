@@ -170,3 +170,18 @@ async def test_create_post_requires_profile(client, s3):
 
 async def test_post_requires_auth(client):
     assert (await client.post("/posts", json={"image_key": "x"})).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://abc.supabase.co",
+        "https://abc.supabase.co/",
+        "https://abc.supabase.co/rest/v1/",
+        "  https://abc.supabase.co/auth/v1 ",
+    ],
+)
+def test_supabase_url_keeps_only_origin(raw):
+    from app.config import Settings
+
+    assert Settings(supabase_url=raw).supabase_url == "https://abc.supabase.co"
