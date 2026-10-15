@@ -26,3 +26,7 @@ next-env.d.ts
 
 # Local Redis snapshots
 dump.rdb
+
+# Load-test tokens and raw output
+loadtest/tokens.json
+loadtest/out/

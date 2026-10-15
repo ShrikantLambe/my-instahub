@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import json
+import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -16,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app import cache, cursor, db, follows, likes, storage
+from app import cache, counter, cursor, db, follows, likes, storage
 from app.events import broker
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
@@ -50,13 +52,38 @@ def make_redis(url: str) -> aioredis.Redis:
     )
 
 
+log = logging.getLogger("app")
+
+
+def buffered() -> bool:
+    """Buffered counter in effect (it needs Redis; without it we stay direct)."""
+    return settings.counter_mode == "buffered" and getattr(app.state, "redis", None) is not None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.open_pool()
     # Redis is optional until Phase 4: an empty REDIS_URL turns it off.
     app.state.redis = make_redis(settings.redis_url) if settings.redis_url else None
     await broker.start(app.state.redis)
+    background = None
+    if buffered():
+        background = asyncio.create_task(
+            counter.run_background(
+                app.state.redis,
+                db.get_pool(),
+                settings.flush_interval_seconds,
+                settings.reconcile_interval_seconds,
+            )
+        )
+    elif settings.counter_mode == "buffered":
+        log.warning("COUNTER_MODE=buffered needs REDIS_URL; using direct mode")
     yield
+    if background is not None:
+        background.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await background
+        await counter.flush(app.state.redis, db.get_pool())  # don't strand pending deltas
     await broker.stop()
     if app.state.redis is not None:
         await app.state.redis.aclose()
@@ -96,11 +123,24 @@ async def health() -> dict:
         except Exception as exc:
             checks["redis"] = f"error: {exc}"
     status = "ok" if all(v in ("ok", "disabled") for v in checks.values()) else "degraded"
-    return {"status": status, **checks, "live_connections": broker.connections}
+    return {
+        "status": status,
+        **checks,
+        "counter_mode": "buffered" if buffered() else "direct",
+        "live_connections": broker.connections,
+    }
 
 
 async def with_viewer_likes(posts: list[Post], viewer_id: UUID | None) -> list[Post]:
-    """Fill viewer_has_liked for a page of posts with one batched query."""
+    """Fill viewer_has_liked for a page of posts with one batched query.
+
+    In buffered mode posts.like_count lags by up to one flush, so the live counts come
+    from Redis instead (one MGET for the page)."""
+    if buffered() and posts:
+        live = await counter.get_counts(app.state.redis, db.get_pool(), [p.id for p in posts])
+        for p in posts:
+            if p.id in live:
+                p.like_count, p.like_version = live[p.id].count, live[p.id].version
     if viewer_id is None or not posts:
         return posts
     liked = await likes.liked_post_ids(db.get_pool(), viewer_id, [p.id for p in posts])
@@ -261,7 +301,9 @@ async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) ->
 async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
     """Idempotent: liking an already-liked post returns the current count unchanged."""
     try:
-        value, changed = await likes.like(db.get_pool(), post_id, user_id)
+        value, changed = await (
+            buffered_change(post_id, user_id, +1) if buffered() else likes.like(db.get_pool(), post_id, user_id)
+        )
     except likes.PostNotFound:
         raise HTTPException(status_code=404, detail="post not found") from None
     except likes.NoProfile:
@@ -275,7 +317,9 @@ async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> L
 async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
     """Idempotent mirror of like: removing a like that isn't there changes nothing."""
     try:
-        value, changed = await likes.unlike(db.get_pool(), post_id, user_id)
+        value, changed = await (
+            buffered_change(post_id, user_id, -1) if buffered() else likes.unlike(db.get_pool(), post_id, user_id)
+        )
     except likes.PostNotFound:
         raise HTTPException(status_code=404, detail="post not found") from None
     if changed:
@@ -347,8 +391,24 @@ async def home_feed(
 
 async def after_like_change(post_id: int, value: likes.LikeCount) -> None:
     """Postgres has committed; now refresh the cache and tell everyone watching."""
-    await cache.store(app.state.redis, post_id, value)
+    if not buffered():  # buffered mode's live counters in Redis already are the cache
+        await cache.store(app.state.redis, post_id, value)
     await broker.publish({"post_id": post_id, "like_count": value.count, "like_version": value.version})
+
+
+async def buffered_change(post_id: int, user_id: UUID, delta: int) -> tuple[likes.LikeCount, bool]:
+    """Phase 6 write path: write only the likes row, count in Redis, flush later."""
+    pool, r = db.get_pool(), app.state.redis
+    changed = await (likes.insert_like if delta > 0 else likes.delete_like)(pool, post_id, user_id)
+    if not changed:
+        return await counter.current(r, pool, post_id), False
+    return await counter.bump(r, pool, post_id, delta), True
+
+
+async def counts_for(post_ids: list[int]) -> dict[int, likes.LikeCount]:
+    if buffered():
+        return await counter.get_counts(app.state.redis, db.get_pool(), post_ids)
+    return await cache.get_counts(app.state.redis, db.get_pool(), post_ids)
 
 
 MAX_WATCHED_POSTS = 100
@@ -367,7 +427,7 @@ def parse_ids(raw: str) -> list[int]:
 @app.get("/likes", response_model=list[LikeCountOut])
 async def like_counts(ids: str = Query(..., description="comma-separated post ids")) -> list[LikeCountOut]:
     """Current counts for a set of posts, read cache-aside (Redis first, Postgres on a miss)."""
-    counts = await cache.get_counts(app.state.redis, db.get_pool(), parse_ids(ids))
+    counts = await counts_for(parse_ids(ids))
     return [LikeCountOut(post_id=pid, like_count=v.count, like_version=v.version) for pid, v in counts.items()]
 
 
@@ -392,7 +452,7 @@ async def stream(posts: str = Query(..., description="comma-separated post ids t
     async def events():
         try:
             yield "retry: 3000\n\n"
-            snapshot = await cache.get_counts(app.state.redis, db.get_pool(), post_ids)
+            snapshot = await counts_for(post_ids)
             for pid, v in snapshot.items():
                 yield sse("likes", {"post_id": pid, "like_count": v.count, "like_version": v.version})
             while True:

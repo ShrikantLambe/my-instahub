@@ -87,3 +87,27 @@ async def liked_post_ids(pool: asyncpg.Pool, user_id: UUID, post_ids: list[int])
         post_ids,
     )
     return {r["post_id"] for r in rows}
+
+
+# --- Buffered mode (Phase 6): only the likes row is written here; no posts row lock. ---
+
+
+async def insert_like(pool: asyncpg.Pool, post_id: int, user_id: UUID) -> bool:
+    """True if this added a like. Same idempotency guarantee: the primary key."""
+    try:
+        return await pool.fetchval(
+            "INSERT INTO likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING true",
+            post_id,
+            user_id,
+        ) is True
+    except asyncpg.ForeignKeyViolationError as exc:
+        if exc.constraint_name == "likes_user_id_fkey":
+            raise NoProfile(user_id) from None
+        raise PostNotFound(post_id) from None
+
+
+async def delete_like(pool: asyncpg.Pool, post_id: int, user_id: UUID) -> bool:
+    """True if this removed a like."""
+    return await pool.fetchval(
+        "DELETE FROM likes WHERE post_id = $1 AND user_id = $2 RETURNING true", post_id, user_id
+    ) is True
