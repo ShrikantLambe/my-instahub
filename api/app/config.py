@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     image_base_url: str = "http://localhost:9000/instahub"
     upload_url_ttl_seconds: int = 300
 
+    @field_validator("redis_url")
+    @classmethod
+    def upstash_needs_tls(cls, v: str) -> str:
+        """Upstash only accepts TLS and closes plain connections ("Connection closed by
+        server"). Its console shows `redis-cli --tls -u redis://...`, so a redis:// URL
+        is easy to copy; upgrade it to rediss://."""
+        v = v.strip()
+        parts = urlsplit(v)
+        if parts.scheme == "redis" and (parts.hostname or "").endswith(".upstash.io"):
+            return "rediss" + v[len("redis"):]
+        return v
+
     @field_validator("supabase_url")
     @classmethod
     def project_origin(cls, v: str) -> str:

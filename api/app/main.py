@@ -8,6 +8,10 @@ from uuid import UUID
 
 import asyncpg
 import redis.asyncio as aioredis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -31,16 +35,26 @@ from app.schemas import (
 )
 
 
+def make_redis(url: str) -> aioredis.Redis:
+    """Hosted Redis (Upstash) closes idle connections. Without retries the next command
+    on a pooled connection fails with "Connection closed by server"; with them it just
+    reconnects. health_check_interval also keeps the long-lived pub/sub link fresh."""
+    return aioredis.from_url(
+        url,
+        decode_responses=True,
+        health_check_interval=30,
+        socket_keepalive=True,
+        socket_connect_timeout=5,
+        retry=Retry(ExponentialBackoff(cap=1, base=0.05), retries=3),
+        retry_on_error=[RedisConnectionError, RedisTimeoutError],
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.open_pool()
     # Redis is optional until Phase 4: an empty REDIS_URL turns it off.
-    app.state.redis = (
-        # health_check_interval keeps the long-lived pub/sub connection from going stale
-        aioredis.from_url(settings.redis_url, decode_responses=True, health_check_interval=30)
-        if settings.redis_url
-        else None
-    )
+    app.state.redis = make_redis(settings.redis_url) if settings.redis_url else None
     await broker.start(app.state.redis)
     yield
     await broker.stop()

@@ -73,7 +73,7 @@ Until the API is hosted, the deployed site shows a "Can't reach the API" page in
 
 ### Live like counts (Phase 4)
 
-**Upstash Redis.** At console.upstash.com → Redis → **Create database** (Free plan, region near your Render region). Copy the **TLS** connection URL, `rediss://default:<password>@<name>.upstash.io:6379`, into Render's `REDIS_URL`. `/health` should then show `"redis":"ok"`. Without it the app still works: counts come from Postgres and live updates only reach viewers on the same API instance.
+**Upstash Redis.** At console.upstash.com → Redis → **Create database** (Free plan, region near your Render region). Copy the **TLS** connection URL, `rediss://default:<password>@<name>.upstash.io:6379`, into Render's `REDIS_URL` (a `redis://` Upstash URL is upgraded to `rediss://` automatically). `/health` should then show `"redis":"ok"`. Without it the app still works: counts come from Postgres and live updates only reach viewers on the same API instance.
 
 The free Render instance sleeps after 15 idle minutes and takes about a minute to wake, so the first page load after a break may show the error page; refresh once it's up.
 
