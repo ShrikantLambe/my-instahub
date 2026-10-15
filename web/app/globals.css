@@ -96,3 +96,5 @@ img.photo { display: block; padding: 0; }
 .profile-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .banner { color: var(--muted); font-size: 0.9rem; margin: 0 0 12px; }
 .feed-end { text-align: center; padding: 8px 0 24px; min-height: 1px; }
+.photo-frame { background: var(--tile); overflow: hidden; }
+.photo-natural { display: block; width: 100%; height: 100%; object-fit: contain; }

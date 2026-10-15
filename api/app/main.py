@@ -48,7 +48,7 @@ app.add_middleware(
 )
 
 POST_COLUMNS = """
-    p.id, p.caption, p.image_key, p.like_count, p.created_at,
+    p.id, p.caption, p.image_key, p.image_width, p.image_height, p.like_count, p.created_at,
     u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name
 """
 
@@ -219,10 +219,13 @@ async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) ->
         raise HTTPException(status_code=400, detail="upload not found; upload the photo first")
     try:
         post_id = await db.get_pool().fetchval(
-            "INSERT INTO posts (author_id, caption, image_key) VALUES ($1, $2, $3) RETURNING id",
+            "INSERT INTO posts (author_id, caption, image_key, image_width, image_height) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
             user_id,
             body.caption,
             body.image_key,
+            body.image_width,
+            body.image_height,
         )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=409, detail="create your profile first") from None

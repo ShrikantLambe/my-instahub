@@ -10,6 +10,8 @@ export type Post = {
   caption: string | null;
   image_key: string;
   image_url: string;
+  image_width: number | null;
+  image_height: number | null;
   like_count: number;
   viewer_has_liked: boolean;
   created_at: string;

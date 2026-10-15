@@ -17,7 +17,13 @@ export function PostCard({ post }: { post: Post }) {
         </Link>
       </header>
       <div onDoubleClick={like}>
-        <PostImage src={post.image_url} alt={post.caption ?? `Photo by @${post.author.username}`} />
+        <PostImage
+          src={post.image_url}
+          alt={post.caption ?? `Photo by @${post.author.username}`}
+          shape="natural"
+          width={post.image_width}
+          height={post.image_height}
+        />
       </div>
       <footer className="card-foot">
         <LikeButton liked={liked} onToggle={toggle} />

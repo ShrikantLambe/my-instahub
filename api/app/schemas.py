@@ -22,6 +22,8 @@ class Post(BaseModel):
     caption: str | None
     image_key: str
     image_url: str
+    image_width: int | None
+    image_height: int | None
     like_count: int
     viewer_has_liked: bool = False  # always False for anonymous viewers
     created_at: datetime
@@ -38,6 +40,8 @@ class Post(BaseModel):
             caption=row["caption"],
             image_key=row["image_key"],
             image_url=storage.public_url(row["image_key"]),
+            image_width=row["image_width"],
+            image_height=row["image_height"],
             like_count=row["like_count"],
             created_at=row["created_at"],
         )
@@ -94,6 +98,9 @@ class UploadOut(BaseModel):
 class PostIn(BaseModel):
     image_key: str
     caption: str | None = Field(default=None, max_length=2200)  # Instagram's limit
+    # Measured by the browser before upload; optional so older clients still work.
+    image_width: int | None = Field(default=None, ge=1, le=20000)
+    image_height: int | None = Field(default=None, ge=1, le=20000)
 
 
 class LikeOut(BaseModel):
