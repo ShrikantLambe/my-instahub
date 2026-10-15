@@ -25,6 +25,7 @@ class Post(BaseModel):
     image_width: int | None
     image_height: int | None
     like_count: int
+    like_version: int  # bumps with every change to like_count; lets copies refuse stale values
     viewer_has_liked: bool = False  # always False for anonymous viewers
     created_at: datetime
 
@@ -43,6 +44,7 @@ class Post(BaseModel):
             image_width=row["image_width"],
             image_height=row["image_height"],
             like_count=row["like_count"],
+            like_version=row["like_version"],
             created_at=row["created_at"],
         )
 
@@ -107,6 +109,13 @@ class LikeOut(BaseModel):
     post_id: int
     liked: bool
     like_count: int
+    like_version: int
+
+
+class LikeCountOut(BaseModel):
+    post_id: int
+    like_count: int
+    like_version: int
 
 
 class FollowOut(BaseModel):

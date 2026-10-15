@@ -77,7 +77,7 @@ async def test_like_twice_counts_once(client, database, post_id, make_user):
     user = await make_user()
     first = (await like(client, post_id, user)).json()
     second = (await like(client, post_id, user)).json()  # double-tap / retry
-    assert first == {"post_id": post_id, "liked": True, "like_count": 1}
+    assert first == {"post_id": post_id, "liked": True, "like_count": 1, "like_version": 1}
     assert second == first
     row = await db_counts(database, post_id)
     assert row["like_count"] == row["truth"] == 1
@@ -87,7 +87,9 @@ async def test_unlike_is_idempotent_and_never_negative(client, database, post_id
     user = await make_user()
     assert (await unlike(client, post_id, user)).json()["like_count"] == 0  # never liked
     await like(client, post_id, user)
-    assert (await unlike(client, post_id, user)).json() == {"post_id": post_id, "liked": False, "like_count": 0}
+    assert (await unlike(client, post_id, user)).json() == {
+        "post_id": post_id, "liked": False, "like_count": 0, "like_version": 2
+    }
     assert (await unlike(client, post_id, user)).json()["like_count"] == 0
     row = await db_counts(database, post_id)
     assert row["like_count"] == row["truth"] == 0

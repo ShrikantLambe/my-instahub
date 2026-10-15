@@ -5,9 +5,10 @@ import type { Post } from "@/lib/api";
 import { LikeButton } from "./LikeButton";
 import { PostImage } from "./PostImage";
 import { useLike } from "./useLike";
+import type { LiveCount } from "./useLiveCounts";
 
-export function PostCard({ post }: { post: Post }) {
-  const { liked, count, toggle, like } = useLike(post);
+export function PostCard({ post, live }: { post: Post; live?: LiveCount }) {
+  const { liked, count, toggle, like } = useLike(post, live);
   return (
     <article className="card">
       <header className="card-head">

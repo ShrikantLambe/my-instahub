@@ -6,6 +6,7 @@ import { apiFetch, type FeedPage, type Post } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
 import { Feed } from "./Feed";
 import { PostCard } from "./PostCard";
+import { useLiveCounts } from "./useLiveCounts";
 
 const PAGE_SIZE = 10;
 
@@ -81,6 +82,8 @@ function FollowingFeed({ token }: { token: string }) {
     return () => io.disconnect();
   }, [status, cursor, load]);
 
+  const live = useLiveCounts(posts.map((p) => p.id)).counts;
+
   if (status === "end" && posts.length === 0) {
     return (
       <p className="empty">
@@ -92,7 +95,7 @@ function FollowingFeed({ token }: { token: string }) {
   return (
     <section className="feed">
       {posts.map((p) => (
-        <PostCard key={p.id} post={p} />
+        <PostCard key={p.id} post={p} live={live[p.id]} />
       ))}
       <div ref={sentinel} className="feed-end">
         {status === "loading" && <span className="muted">Loading…</span>}

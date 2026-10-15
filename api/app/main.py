@@ -1,3 +1,5 @@
+import asyncio
+import json
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -8,13 +10,16 @@ import asyncpg
 import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
-from app import cursor, db, follows, likes, storage
+from app import cache, cursor, db, follows, likes, storage
+from app.events import broker
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
 from app.schemas import (
     FeedPage,
     FollowOut,
+    LikeCountOut,
     LikeOut,
     Post,
     PostIn,
@@ -31,9 +36,14 @@ async def lifespan(app: FastAPI):
     await db.open_pool()
     # Redis is optional until Phase 4: an empty REDIS_URL turns it off.
     app.state.redis = (
-        aioredis.from_url(settings.redis_url, decode_responses=True) if settings.redis_url else None
+        # health_check_interval keeps the long-lived pub/sub connection from going stale
+        aioredis.from_url(settings.redis_url, decode_responses=True, health_check_interval=30)
+        if settings.redis_url
+        else None
     )
+    await broker.start(app.state.redis)
     yield
+    await broker.stop()
     if app.state.redis is not None:
         await app.state.redis.aclose()
     await db.close_pool()
@@ -48,7 +58,8 @@ app.add_middleware(
 )
 
 POST_COLUMNS = """
-    p.id, p.caption, p.image_key, p.image_width, p.image_height, p.like_count, p.created_at,
+    p.id, p.caption, p.image_key, p.image_width, p.image_height,
+    p.like_count, p.like_version, p.created_at,
     u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name
 """
 
@@ -71,7 +82,7 @@ async def health() -> dict:
         except Exception as exc:
             checks["redis"] = f"error: {exc}"
     status = "ok" if all(v in ("ok", "disabled") for v in checks.values()) else "degraded"
-    return {"status": status, **checks}
+    return {"status": status, **checks, "live_connections": broker.connections}
 
 
 async def with_viewer_likes(posts: list[Post], viewer_id: UUID | None) -> list[Post]:
@@ -236,22 +247,26 @@ async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) ->
 async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
     """Idempotent: liking an already-liked post returns the current count unchanged."""
     try:
-        count = await likes.like(db.get_pool(), post_id, user_id)
+        value, changed = await likes.like(db.get_pool(), post_id, user_id)
     except likes.PostNotFound:
         raise HTTPException(status_code=404, detail="post not found") from None
     except likes.NoProfile:
         raise HTTPException(status_code=409, detail="create your profile first") from None
-    return LikeOut(post_id=post_id, liked=True, like_count=count)
+    if changed:
+        await after_like_change(post_id, value)
+    return LikeOut(post_id=post_id, liked=True, like_count=value.count, like_version=value.version)
 
 
 @app.delete("/posts/{post_id}/like", response_model=LikeOut)
 async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
     """Idempotent mirror of like: removing a like that isn't there changes nothing."""
     try:
-        count = await likes.unlike(db.get_pool(), post_id, user_id)
+        value, changed = await likes.unlike(db.get_pool(), post_id, user_id)
     except likes.PostNotFound:
         raise HTTPException(status_code=404, detail="post not found") from None
-    return LikeOut(post_id=post_id, liked=False, like_count=count)
+    if changed:
+        await after_like_change(post_id, value)
+    return LikeOut(post_id=post_id, liked=False, like_count=value.count, like_version=value.version)
 
 
 @app.post("/users/{username}/follow", response_model=FollowOut)
@@ -311,3 +326,72 @@ async def home_feed(
     posts = await with_viewer_likes([Post.from_row(r) for r in page], user_id)
     next_cursor = cursor.encode(page[-1]["created_at"], page[-1]["id"]) if more else None
     return FeedPage(posts=posts, next_cursor=next_cursor)
+
+
+# --- Phase 4: cached like counts and live updates -------------------------------
+
+
+async def after_like_change(post_id: int, value: likes.LikeCount) -> None:
+    """Postgres has committed; now refresh the cache and tell everyone watching."""
+    await cache.store(app.state.redis, post_id, value)
+    await broker.publish({"post_id": post_id, "like_count": value.count, "like_version": value.version})
+
+
+MAX_WATCHED_POSTS = 100
+
+
+def parse_ids(raw: str) -> list[int]:
+    try:
+        ids = [int(x) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ids must be comma-separated integers") from None
+    if not 0 < len(ids) <= MAX_WATCHED_POSTS:
+        raise HTTPException(status_code=400, detail=f"give 1-{MAX_WATCHED_POSTS} post ids")
+    return ids
+
+
+@app.get("/likes", response_model=list[LikeCountOut])
+async def like_counts(ids: str = Query(..., description="comma-separated post ids")) -> list[LikeCountOut]:
+    """Current counts for a set of posts, read cache-aside (Redis first, Postgres on a miss)."""
+    counts = await cache.get_counts(app.state.redis, db.get_pool(), parse_ids(ids))
+    return [LikeCountOut(post_id=pid, like_count=v.count, like_version=v.version) for pid, v in counts.items()]
+
+
+HEARTBEAT_SECONDS = 15
+
+
+def sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.get("/stream")
+async def stream(posts: str = Query(..., description="comma-separated post ids to watch")):
+    """Server-Sent Events: a snapshot of each watched post's count, then every change live.
+
+    The browser's EventSource reconnects on its own; each reconnect starts with a fresh
+    snapshot, so anything missed while disconnected is caught up. Counts carry
+    like_version and clients ignore anything older than what they already show.
+    """
+    post_ids = parse_ids(posts)
+    sub = broker.subscribe(set(post_ids))  # subscribe before the snapshot: nothing slips between
+
+    async def events():
+        try:
+            yield "retry: 3000\n\n"
+            snapshot = await cache.get_counts(app.state.redis, db.get_pool(), post_ids)
+            for pid, v in snapshot.items():
+                yield sse("likes", {"post_id": pid, "like_count": v.count, "like_version": v.version})
+            while True:
+                try:
+                    event = await asyncio.wait_for(sub.queue.get(), timeout=HEARTBEAT_SECONDS)
+                    yield sse("likes", event)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # keeps proxies from closing an idle connection
+        finally:
+            broker.unsubscribe(sub)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

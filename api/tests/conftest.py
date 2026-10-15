@@ -23,6 +23,8 @@ os.environ["S3_ENDPOINT"] = "https://s3.amazonaws.com"  # moto intercepts AWS en
 os.environ["S3_REGION"] = "us-east-1"
 os.environ["S3_BUCKET"] = "instahub-test"
 os.environ["IMAGE_BASE_URL"] = "https://cdn.example/instahub"
+# Phase 4 needs a real Redis (docker compose up); db 15 keeps tests away from dev data.
+os.environ["REDIS_URL"] = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
 @pytest.fixture(scope="session")
@@ -36,6 +38,11 @@ async def database():
     await admin.close()
     await migrate(TEST_URL)
     await seed(TEST_URL)
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(os.environ["REDIS_URL"])
+    await r.flushdb()
+    await r.aclose()
     yield TEST_URL
 
 
