@@ -9,10 +9,21 @@ import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, likes, storage
+from app import cursor, db, follows, likes, storage
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
-from app.schemas import LikeOut, Post, PostIn, Profile, ProfileIn, UploadIn, UploadOut, User
+from app.schemas import (
+    FeedPage,
+    FollowOut,
+    LikeOut,
+    Post,
+    PostIn,
+    Profile,
+    ProfileIn,
+    UploadIn,
+    UploadOut,
+    User,
+)
 
 
 @asynccontextmanager
@@ -107,7 +118,7 @@ async def get_post(post_id: int, viewer_id: UUID | None = Depends(optional_user_
 
 
 @app.get("/users/{username}", response_model=User)
-async def get_user(username: str) -> User:
+async def get_user(username: str, viewer_id: UUID | None = Depends(optional_user_id)) -> User:
     row = await db.get_pool().fetchrow(
         """
         SELECT u.id, u.username, u.display_name, u.avatar_key, u.created_at,
@@ -120,7 +131,10 @@ async def get_user(username: str) -> User:
     )
     if row is None:
         raise HTTPException(status_code=404, detail="user not found")
-    return User(**dict(row))
+    user = User(**dict(row))
+    if viewer_id is not None and viewer_id != user.id:
+        user.viewer_follows = await follows.is_following(db.get_pool(), viewer_id, user.id)
+    return user
 
 
 @app.get("/users/{username}/posts", response_model=list[Post])
@@ -235,3 +249,62 @@ async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) ->
     except likes.PostNotFound:
         raise HTTPException(status_code=404, detail="post not found") from None
     return LikeOut(post_id=post_id, liked=False, like_count=count)
+
+
+@app.post("/users/{username}/follow", response_model=FollowOut)
+async def follow_user(username: str, user_id: UUID = Depends(current_user_id)) -> FollowOut:
+    """Idempotent: following someone you already follow changes nothing."""
+    try:
+        count = await follows.follow(db.get_pool(), user_id, username)
+    except follows.UserNotFound:
+        raise HTTPException(status_code=404, detail="user not found") from None
+    except asyncpg.CheckViolationError:
+        raise HTTPException(status_code=400, detail="you can't follow yourself") from None
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(status_code=409, detail="create your profile first") from None
+    return FollowOut(username=username, following=True, follower_count=count)
+
+
+@app.delete("/users/{username}/follow", response_model=FollowOut)
+async def unfollow_user(username: str, user_id: UUID = Depends(current_user_id)) -> FollowOut:
+    try:
+        count = await follows.unfollow(db.get_pool(), user_id, username)
+    except follows.UserNotFound:
+        raise HTTPException(status_code=404, detail="user not found") from None
+    return FollowOut(username=username, following=False, follower_count=count)
+
+
+@app.get("/feed", response_model=FeedPage)
+async def home_feed(
+    before: str | None = Query(None, description="next_cursor from the previous page"),
+    limit: int = Query(10, ge=1, le=50),
+    user_id: UUID = Depends(current_user_id),
+) -> FeedPage:
+    """Home feed, fan-out on read: the latest posts from people you follow, plus your own.
+
+    Built at request time from follows + posts. The alternative, fan-out on write,
+    pushes each new post id into every follower's Redis list; see design.md.
+    """
+    try:
+        after_ts, after_id = cursor.decode(before) if before else (None, None)
+    except cursor.BadCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    rows = await db.get_pool().fetch(
+        f"""
+        SELECT {POST_COLUMNS}
+        FROM posts p JOIN users u ON u.id = p.author_id
+        WHERE (p.author_id = $1
+               OR p.author_id IN (SELECT followee_id FROM follows WHERE follower_id = $1))
+          AND ($2::timestamptz IS NULL OR (p.created_at, p.id) < ($2, $3))
+        ORDER BY p.created_at DESC, p.id DESC
+        LIMIT $4
+        """,
+        user_id,
+        after_ts,
+        after_id,
+        limit + 1,  # one extra row tells us whether another page exists
+    )
+    page, more = rows[:limit], len(rows) > limit
+    posts = await with_viewer_likes([Post.from_row(r) for r in page], user_id)
+    next_cursor = cursor.encode(page[-1]["created_at"], page[-1]["id"]) if more else None
+    return FeedPage(posts=posts, next_cursor=next_cursor)

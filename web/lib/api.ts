@@ -24,6 +24,7 @@ export type User = {
   post_count: number;
   follower_count: number;
   following_count: number;
+  viewer_follows: boolean;
 };
 
 export type Profile = { id: string; username: string; display_name: string | null };
@@ -31,6 +32,10 @@ export type Profile = { id: string; username: string; display_name: string | nul
 export type Upload = { upload_url: string; key: string; expires_in: number };
 
 export type LikeResult = { post_id: number; liked: boolean; like_count: number };
+
+export type FollowResult = { username: string; following: boolean; follower_count: number };
+
+export type FeedPage = { posts: Post[]; next_cursor: string | null };
 
 export class ApiError extends Error {
   constructor(
