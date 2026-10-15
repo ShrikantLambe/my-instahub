@@ -52,6 +52,7 @@ class User(BaseModel):
     post_count: int
     follower_count: int
     following_count: int
+    viewer_follows: bool = False  # always False for anonymous viewers
 
 
 class Profile(BaseModel):
@@ -99,3 +100,14 @@ class LikeOut(BaseModel):
     post_id: int
     liked: bool
     like_count: int
+
+
+class FollowOut(BaseModel):
+    username: str
+    following: bool
+    follower_count: int
+
+
+class FeedPage(BaseModel):
+    posts: list[Post]
+    next_cursor: str | None  # pass back as ?before= to get the next (older) page
