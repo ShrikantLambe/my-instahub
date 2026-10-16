@@ -67,8 +67,13 @@ RETURNING id, comment_count, comment_version
 """
 
 
-async def delete(pool: asyncpg.Pool, comment_id: int, user_id: UUID) -> tuple[int, CommentCount]:
-    """Delete a comment; returns (post_id, new count)."""
+class Deleted(NamedTuple):
+    post_id: int
+    post_author: UUID  # whose notification (if any) went with the comment
+    count: CommentCount
+
+
+async def delete(pool: asyncpg.Pool, comment_id: int, user_id: UUID) -> Deleted:
     async with pool.acquire() as conn, conn.transaction():
         # Lock the comment so the permission check and the delete see the same row.
         row = await conn.fetchrow(
@@ -85,7 +90,7 @@ async def delete(pool: asyncpg.Pool, comment_id: int, user_id: UUID) -> tuple[in
         if user_id not in (row["author_id"], row["post_author_id"]):
             raise NotAllowed(comment_id)
         res = await conn.fetchrow(DELETE_SQL, comment_id)
-    return res["id"], CommentCount(res["comment_count"], res["comment_version"])
+    return Deleted(res["id"], row["post_author_id"], CommentCount(res["comment_count"], res["comment_version"]))
 
 
 async def page(

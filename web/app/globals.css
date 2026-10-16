@@ -136,6 +136,7 @@ img.photo { display: block; padding: 0; }
 .avatar-letter {
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--muted); font-weight: 600; line-height: 1; user-select: none;
+  box-shadow: inset 0 0 0 1px var(--border); /* stays visible on grey rows */
 }
 .comment-list li { display: flex; gap: 10px; align-items: flex-start; }
 .comment-list li > div { min-width: 0; }
@@ -147,3 +148,19 @@ img.photo { display: block; padding: 0; }
 .form .hint { font-weight: 400; color: var(--muted); font-size: 0.8rem; align-self: flex-end; }
 .form-actions { display: flex; gap: 8px; }
 .grid a { display: block; line-height: 0; }
+
+.nav-icon { position: relative; display: inline-flex; line-height: 0; color: var(--text); }
+.badge {
+  position: absolute; top: -4px; right: -8px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: var(--like); color: #fff; border: 2px solid var(--surface);
+  font-size: 0.7rem; font-weight: 700; line-height: 14px; text-align: center;
+}
+.activity h1 { margin: 0 0 12px; font-size: 1.25rem; }
+.activity-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.activity-list li { display: flex; align-items: center; gap: 12px; padding: 10px 8px; border-radius: 8px; }
+.activity-list li.unread { background: var(--tile); }
+.activity-list p { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.activity-avatar { line-height: 0; }
+.activity-actor { font-weight: 600; }
+.activity-thumb { flex: none; line-height: 0; }
+.activity-thumb img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; background: var(--tile); }

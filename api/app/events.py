@@ -1,7 +1,8 @@
 """Live like counts: Redis pub/sub fanned out to Server-Sent Events.
 
 Each API instance runs one Redis subscriber on the `post-events` channel and forwards
-messages to the browsers connected to *it*. Publishing through Redis is what lets a
+messages to the browsers connected to *it*. Most events are about a post (`post_id`);
+notification events are addressed to one user (`user_id`) instead. Publishing through Redis is what lets a
 like handled by instance 1 reach a viewer connected to instance 2. With no Redis
 configured (local dev, one instance) events are delivered in-process instead.
 """
@@ -20,8 +21,9 @@ QUEUE_SIZE = 100
 
 
 class Subscription:
-    def __init__(self, post_ids: set[int]):
+    def __init__(self, post_ids: set[int], user_id: str | None = None):
         self.post_ids = post_ids
+        self.user_id = user_id  # set for a signed-in user's notification stream
         self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=QUEUE_SIZE)
 
 
@@ -42,8 +44,8 @@ class Broker:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
 
-    def subscribe(self, post_ids: set[int]) -> Subscription:
-        sub = Subscription(post_ids)
+    def subscribe(self, post_ids: set[int], user_id: str | None = None) -> Subscription:
+        sub = Subscription(post_ids, user_id)
         self._subs.add(sub)
         return sub
 
@@ -69,7 +71,8 @@ class Broker:
 
     def _deliver(self, event: dict) -> None:
         for sub in list(self._subs):
-            if event.get("post_id") in sub.post_ids:
+            to_user = event.get("user_id")
+            if (sub.user_id == to_user) if to_user else (event.get("post_id") in sub.post_ids):
                 try:
                     sub.queue.put_nowait(event)
                 except asyncio.QueueFull:
