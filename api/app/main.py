@@ -35,9 +35,11 @@ from app.schemas import (
     PostIn,
     Profile,
     ProfileIn,
+    ProfileUpdate,
     UploadIn,
     UploadOut,
     User,
+    avatar_url,
 )
 
 
@@ -105,7 +107,8 @@ app.add_middleware(
 POST_COLUMNS = """
     p.id, p.caption, p.image_key, p.image_width, p.image_height,
     p.like_count, p.like_version, p.comment_count, p.comment_version, p.created_at,
-    u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name
+    u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name,
+    u.avatar_key AS author_avatar_key
 """
 
 
@@ -190,7 +193,7 @@ async def get_post(post_id: int, viewer_id: UUID | None = Depends(optional_user_
 async def get_user(username: str, viewer_id: UUID | None = Depends(optional_user_id)) -> User:
     row = await db.get_pool().fetchrow(
         """
-        SELECT u.id, u.username, u.display_name, u.avatar_key, u.created_at,
+        SELECT u.id, u.username, u.display_name, u.avatar_key, u.bio, u.city, u.website, u.created_at,
                (SELECT count(*) FROM posts WHERE author_id = u.id)        AS post_count,
                (SELECT count(*) FROM follows WHERE followee_id = u.id)    AS follower_count,
                (SELECT count(*) FROM follows WHERE follower_id = u.id)    AS following_count
@@ -200,7 +203,7 @@ async def get_user(username: str, viewer_id: UUID | None = Depends(optional_user
     )
     if row is None:
         raise HTTPException(status_code=404, detail="user not found")
-    user = User(**dict(row))
+    user = User(**dict(row), avatar_url=avatar_url(row["avatar_key"]))
     if viewer_id is not None and viewer_id != user.id:
         user.viewer_follows = await follows.is_following(db.get_pool(), viewer_id, user.id)
     return user
@@ -230,26 +233,28 @@ async def list_user_posts(
 # --- Signed-in endpoints. The user id always comes from the verified token. ---
 
 
+PROFILE_COLUMNS = "id, username, display_name, avatar_key, bio, city, website"
+
+
 @app.get("/me", response_model=Profile)
 async def get_me(user_id: UUID = Depends(current_user_id)) -> Profile:
-    row = await db.get_pool().fetchrow(
-        "SELECT id, username, display_name FROM users WHERE id = $1", user_id
-    )
+    row = await db.get_pool().fetchrow(f"SELECT {PROFILE_COLUMNS} FROM users WHERE id = $1", user_id)
     if row is None:
         # Signed in with Supabase but no profile yet: the client sends them to pick a username.
         raise HTTPException(status_code=404, detail="profile not found")
-    return Profile(**dict(row))
+    return Profile.from_row(row)
 
 
 @app.put("/me", response_model=Profile)
 async def put_me(body: ProfileIn, user_id: UUID = Depends(current_user_id)) -> Profile:
+    """Create the profile (onboarding). Other details are edited with PATCH /me."""
     try:
         row = await db.get_pool().fetchrow(
-            """
+            f"""
             INSERT INTO users (id, username, display_name) VALUES ($1, $2, $3)
             ON CONFLICT (id) DO UPDATE
               SET username = EXCLUDED.username, display_name = EXCLUDED.display_name
-            RETURNING id, username, display_name
+            RETURNING {PROFILE_COLUMNS}
             """,
             user_id,
             body.username,
@@ -257,7 +262,36 @@ async def put_me(body: ProfileIn, user_id: UUID = Depends(current_user_id)) -> P
         )
     except asyncpg.UniqueViolationError:
         raise HTTPException(status_code=409, detail="username is taken") from None
-    return Profile(**dict(row))
+    return Profile.from_row(row)
+
+
+@app.patch("/me", response_model=Profile)
+async def patch_me(body: ProfileUpdate, user_id: UUID = Depends(current_user_id)) -> Profile:
+    """Edit profile: username, display name, bio, city, website and photo.
+
+    Only the fields present in the request change, so the form can send just what was
+    edited. A new photo must be one of this user's avatar uploads that has landed.
+    """
+    changes = body.model_dump(include=body.model_fields_set)
+    key = changes.get("avatar_key")
+    if key is not None:
+        if not _owns_key(user_id, key, "avatars"):
+            raise HTTPException(status_code=400, detail="avatar_key is not one of your uploads")
+        if not await storage.object_exists(key):
+            raise HTTPException(status_code=400, detail="upload not found; upload the photo first")
+    if not changes:
+        return await get_me(user_id)
+    # Column names come from the model's fixed field list, never from the request.
+    sets = ", ".join(f"{col} = ${i}" for i, col in enumerate(changes, start=2))
+    try:
+        row = await db.get_pool().fetchrow(
+            f"UPDATE users SET {sets} WHERE id = $1 RETURNING {PROFILE_COLUMNS}", user_id, *changes.values()
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(status_code=409, detail="username is taken") from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="profile not found")
+    return Profile.from_row(row)
 
 
 @app.post("/uploads", response_model=UploadOut)
@@ -265,8 +299,10 @@ async def create_upload(body: UploadIn, user_id: UUID = Depends(current_user_id)
     """Hand out a short-lived URL the browser PUTs the photo to, straight into the bucket."""
     ext = storage.IMAGE_TYPES[body.content_type]
     now = datetime.now(timezone.utc)
-    # Keys are namespaced by user so POST /posts can check the caller owns the upload.
-    key = f"posts/{user_id}/{now:%Y/%m}/{uuid.uuid4().hex}.{ext}"
+    # Keys are namespaced by purpose and user so POST /posts and PATCH /me can check
+    # the caller owns the upload (and that a post photo isn't used as an avatar).
+    folder = "avatars" if body.purpose == "avatar" else "posts"
+    key = f"{folder}/{user_id}/{now:%Y/%m}/{uuid.uuid4().hex}.{ext}"
     return UploadOut(
         upload_url=storage.presign_put(key, body.content_type),
         key=key,
@@ -274,9 +310,9 @@ async def create_upload(body: UploadIn, user_id: UUID = Depends(current_user_id)
     )
 
 
-def _owns_key(user_id: UUID, key: str) -> bool:
+def _owns_key(user_id: UUID, key: str, folder: str = "posts") -> bool:
     exts = "|".join(storage.IMAGE_TYPES.values())
-    pattern = rf"posts/{user_id}/\d{{4}}/\d{{2}}/[0-9a-f]{{32}}\.({exts})"
+    pattern = rf"{folder}/{user_id}/\d{{4}}/\d{{2}}/[0-9a-f]{{32}}\.({exts})"
     return re.fullmatch(pattern, key) is not None
 
 

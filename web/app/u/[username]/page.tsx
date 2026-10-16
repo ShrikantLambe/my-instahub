@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getUser, getUserPosts } from "@/lib/api";
 import { PostImage } from "../../PostImage";
@@ -14,11 +15,17 @@ export default async function ProfilePage({ params }: { params: Promise<{ userna
   return (
     <section>
       <ProfileHeader initialUser={user} />
-      <div className="grid">
-        {posts.map((p) => (
-          <PostImage key={p.id} src={p.image_url} alt={p.caption ?? `Photo by @${user.username}`} />
-        ))}
-      </div>
+      {posts.length === 0 ? (
+        <p className="empty">No posts yet.</p>
+      ) : (
+        <div className="grid">
+          {posts.map((p) => (
+            <Link key={p.id} href={`/p/${p.id}`} aria-label={p.caption ?? `Post by @${user.username}`}>
+              <PostImage src={p.image_url} alt={p.caption ?? `Photo by @${user.username}`} />
+            </Link>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

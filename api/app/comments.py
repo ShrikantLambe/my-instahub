@@ -15,7 +15,8 @@ from app.likes import NoProfile, PostNotFound
 
 COLUMNS = """
     c.id, c.post_id, c.body, c.created_at,
-    u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name
+    u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name,
+    u.avatar_key AS author_avatar_key
 """
 
 

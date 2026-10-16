@@ -2,7 +2,12 @@
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Author = { id: string; username: string; display_name: string | null };
+export type Author = {
+  id: string;
+  username: string;
+  display_name: string | null;
+  avatar_url?: string | null; // optional: older API deployments don't send it
+};
 
 export type Post = {
   id: number;
@@ -25,6 +30,10 @@ export type User = {
   username: string;
   display_name: string | null;
   avatar_key: string | null;
+  avatar_url?: string | null;
+  bio?: string | null;
+  city?: string | null;
+  website?: string | null;
   created_at: string;
   post_count: number;
   follower_count: number;
@@ -32,7 +41,16 @@ export type User = {
   viewer_follows: boolean;
 };
 
-export type Profile = { id: string; username: string; display_name: string | null };
+export type Profile = {
+  id: string;
+  username: string;
+  display_name: string | null;
+  avatar_key?: string | null;
+  avatar_url?: string | null;
+  bio?: string | null;
+  city?: string | null;
+  website?: string | null;
+};
 
 export type Upload = { upload_url: string; key: string; expires_in: number };
 
@@ -87,10 +105,13 @@ export const getUserPosts = async (username: string) =>
   (await get<Post[]>(`/users/${encodeURIComponent(username)}/posts`)) ?? [];
 
 // FastAPI errors are {detail: string} or, for validation, {detail: [{msg}, ...]}.
+// Pydantic prefixes validator messages with "Value error, ", which users needn't see.
 function errorMessage(body: unknown, status: number): string {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) return detail.map((d) => d?.msg ?? String(d)).join("; ");
+  if (Array.isArray(detail)) {
+    return detail.map((d) => String(d?.msg ?? d).replace(/^Value error, /, "")).join("; ");
+  }
   return `Request failed (${status})`;
 }
 

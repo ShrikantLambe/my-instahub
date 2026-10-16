@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useAuth } from "./AuthProvider";
+import { Avatar } from "./Avatar";
 
 export function NavAuth() {
   const { ready, session, profile } = useAuth();
@@ -21,7 +22,9 @@ export function NavAuth() {
     <div className="nav-links">
       {explore}
       <Link href="/new" className="button">New post</Link>
-      <Link href={`/u/${profile.username}`} className="nav-profile">@{profile.username}</Link>
+      <Link href={`/u/${profile.username}`} className="nav-profile" aria-label={`Your profile (@${profile.username})`}>
+        <Avatar user={profile} size={30} />
+      </Link>
     </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { Post } from "@/lib/api";
+import { Avatar } from "./Avatar";
 import { LikeButton } from "./LikeButton";
 import { PostImage } from "./PostImage";
 import { useLike } from "./useLike";
@@ -25,7 +26,10 @@ export function PostCard({
   return (
     <article className="card">
       <header className="card-head">
-        <Link href={`/u/${post.author.username}`}>@{post.author.username}</Link>
+        <Link href={`/u/${post.author.username}`} className="author">
+          <Avatar user={post.author} size={28} />
+          {post.author.username}
+        </Link>
         <Link href={`/p/${post.id}`} className="muted">
           <time dateTime={post.created_at}>{new Date(post.created_at).toLocaleString()}</time>
         </Link>
