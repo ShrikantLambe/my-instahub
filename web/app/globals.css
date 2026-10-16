@@ -164,3 +164,29 @@ img.photo { display: block; padding: 0; }
 .activity-actor { font-weight: 600; }
 .activity-thumb { flex: none; line-height: 0; }
 .activity-thumb img { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; background: var(--tile); }
+
+.zoomable { cursor: zoom-in; }
+.zoomable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.lightbox {
+  border: 0; padding: 0; margin: 0;
+  width: 100vw; height: 100dvh; max-width: none; max-height: none;
+  background: transparent;
+  display: grid; place-items: center;
+  cursor: zoom-out;
+}
+.lightbox:not([open]) { display: none; }
+.lightbox::backdrop { background: rgba(0, 0, 0, 0.88); }
+.lightbox img {
+  max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px);
+  object-fit: contain; cursor: default;
+  animation: lightbox-in 140ms ease-out;
+}
+.lightbox-close {
+  position: fixed; top: 12px; right: 12px;
+  width: 40px; height: 40px; border-radius: 50%;
+  border: 0; background: rgba(255, 255, 255, 0.15); color: #fff;
+  font-size: 1.1rem; cursor: pointer;
+}
+.lightbox-close:hover { background: rgba(255, 255, 255, 0.28); }
+@keyframes lightbox-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .lightbox img { animation: none; } }
