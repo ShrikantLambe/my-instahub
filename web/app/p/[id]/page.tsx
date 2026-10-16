@@ -1,14 +1,17 @@
 import { notFound } from "next/navigation";
-import { getPost } from "@/lib/api";
+import { getComments, getPost } from "@/lib/api";
 import { Feed } from "../../Feed";
 
 export const dynamic = "force-dynamic";
 
-// A single post: where User C watches the like count (live updates arrive in Phase 4).
+// A single post with its comments; like counts and comments update live.
 export default async function PostPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!/^\d+$/.test(id)) notFound();
-  const post = await getPost(id);
+  const [post, comments] = await Promise.all([
+    getPost(id),
+    getComments(Number(id)).catch(() => null), // the page still works; comments retry in the browser
+  ]);
   if (!post) notFound();
-  return <Feed initialPosts={[post]} path={`/posts/${post.id}`} single />;
+  return <Feed initialPosts={[post]} path={`/posts/${post.id}`} single initialComments={comments} />;
 }

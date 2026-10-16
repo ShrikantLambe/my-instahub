@@ -18,11 +18,15 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app import cache, counter, cursor, db, follows, likes, storage
+from app import cache, comments, counter, cursor, db, follows, likes, storage
 from app.events import broker
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
 from app.schemas import (
+    Comment,
+    CommentChange,
+    CommentIn,
+    CommentPage,
     FeedPage,
     FollowOut,
     LikeCountOut,
@@ -100,7 +104,7 @@ app.add_middleware(
 
 POST_COLUMNS = """
     p.id, p.caption, p.image_key, p.image_width, p.image_height,
-    p.like_count, p.like_version, p.created_at,
+    p.like_count, p.like_version, p.comment_count, p.comment_version, p.created_at,
     u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name
 """
 
@@ -386,6 +390,64 @@ async def home_feed(
     return FeedPage(posts=posts, next_cursor=next_cursor)
 
 
+# --- Comments ---------------------------------------------------------------------
+
+
+@app.get("/posts/{post_id}/comments", response_model=CommentPage)
+async def list_comments(
+    post_id: int,
+    before: str | None = Query(None, description="next_cursor from the previous page"),
+    limit: int = Query(20, ge=1, le=50),
+) -> CommentPage:
+    """A post's comments, newest first, paged by cursor like the feed."""
+    try:
+        after = cursor.decode(before) if before else None
+    except cursor.BadCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    pool = db.get_pool()
+    count = (await comments.counts(pool, [post_id])).get(post_id)
+    if count is None:
+        raise HTTPException(status_code=404, detail="post not found")
+    rows, more = await comments.page(pool, post_id, after, limit)
+    return CommentPage(
+        comments=[Comment.from_row(r) for r in rows],
+        next_cursor=cursor.encode(rows[-1]["created_at"], rows[-1]["id"]) if more else None,
+        comment_count=count.count,
+        comment_version=count.version,
+    )
+
+
+@app.post("/posts/{post_id}/comments", response_model=CommentChange, status_code=201)
+async def add_comment(post_id: int, body: CommentIn, user_id: UUID = Depends(current_user_id)) -> CommentChange:
+    try:
+        row, count = await comments.add(db.get_pool(), post_id, user_id, body.body)
+    except likes.PostNotFound:
+        raise HTTPException(status_code=404, detail="post not found") from None
+    except likes.NoProfile:
+        raise HTTPException(status_code=409, detail="create your profile first") from None
+    change = CommentChange(
+        post_id=post_id, comment=Comment.from_row(row), comment_count=count.count, comment_version=count.version
+    )
+    await broker.publish({"type": "comments", **change.model_dump(mode="json")})
+    return change
+
+
+@app.delete("/comments/{comment_id}", response_model=CommentChange)
+async def delete_comment(comment_id: int, user_id: UUID = Depends(current_user_id)) -> CommentChange:
+    """The comment's author can delete it, and so can the author of the post it's on."""
+    try:
+        post_id, count = await comments.delete(db.get_pool(), comment_id, user_id)
+    except comments.CommentNotFound:
+        raise HTTPException(status_code=404, detail="comment not found") from None
+    except comments.NotAllowed:
+        raise HTTPException(status_code=403, detail="you can only delete your own comments") from None
+    change = CommentChange(
+        post_id=post_id, deleted_id=comment_id, comment_count=count.count, comment_version=count.version
+    )
+    await broker.publish({"type": "comments", **change.model_dump(mode="json")})
+    return change
+
+
 # --- Phase 4: cached like counts and live updates -------------------------------
 
 
@@ -440,7 +502,10 @@ def sse(event: str, data: dict) -> str:
 
 @app.get("/stream")
 async def stream(posts: str = Query(..., description="comma-separated post ids to watch")):
-    """Server-Sent Events: a snapshot of each watched post's count, then every change live.
+    """Server-Sent Events: a snapshot of each watched post's counts, then every change live.
+
+    Events: `likes` (like_count, like_version) and `comments` (comment_count,
+    comment_version, plus the new `comment` or the `deleted_id` when one changed).
 
     The browser's EventSource reconnects on its own; each reconnect starts with a fresh
     snapshot, so anything missed while disconnected is caught up. Counts carry
@@ -455,10 +520,14 @@ async def stream(posts: str = Query(..., description="comma-separated post ids t
             snapshot = await counts_for(post_ids)
             for pid, v in snapshot.items():
                 yield sse("likes", {"post_id": pid, "like_count": v.count, "like_version": v.version})
+            for pid, c in (await comments.counts(db.get_pool(), post_ids)).items():
+                yield sse("comments", {"post_id": pid, "comment_count": c.count, "comment_version": c.version})
             while True:
                 try:
                     event = await asyncio.wait_for(sub.queue.get(), timeout=HEARTBEAT_SECONDS)
-                    yield sse("likes", event)
+                    # Like events predate the type field; everything else names its type.
+                    kind = event.get("type", "likes")
+                    yield sse(kind, {k: v for k, v in event.items() if k != "type"})
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"  # keeps proxies from closing an idle connection
         finally:

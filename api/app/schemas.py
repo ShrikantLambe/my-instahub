@@ -27,6 +27,8 @@ class Post(BaseModel):
     like_count: int
     like_version: int  # bumps with every change to like_count; lets copies refuse stale values
     viewer_has_liked: bool = False  # always False for anonymous viewers
+    comment_count: int = 0
+    comment_version: int = 0  # like like_version, for the comment count
     created_at: datetime
 
     @classmethod
@@ -45,6 +47,8 @@ class Post(BaseModel):
             image_height=row["image_height"],
             like_count=row["like_count"],
             like_version=row["like_version"],
+            comment_count=row["comment_count"],
+            comment_version=row["comment_version"],
             created_at=row["created_at"],
         )
 
@@ -127,3 +131,56 @@ class FollowOut(BaseModel):
 class FeedPage(BaseModel):
     posts: list[Post]
     next_cursor: str | None  # pass back as ?before= to get the next (older) page
+
+
+class Comment(BaseModel):
+    id: int
+    post_id: int
+    author: Author
+    body: str
+    created_at: datetime
+
+    @classmethod
+    def from_row(cls, row: Record) -> "Comment":
+        return cls(
+            id=row["id"],
+            post_id=row["post_id"],
+            author=Author(
+                id=row["author_id"],
+                username=row["author_username"],
+                display_name=row["author_display_name"],
+            ),
+            body=row["body"],
+            created_at=row["created_at"],
+        )
+
+
+class CommentIn(BaseModel):
+    body: str
+
+    @field_validator("body")
+    @classmethod
+    def check_body(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("write something first")
+        if len(v) > 2200:  # Instagram's limit
+            raise ValueError("keep it under 2200 characters")
+        return v
+
+
+class CommentPage(BaseModel):
+    comments: list[Comment]  # newest first
+    next_cursor: str | None  # pass back as ?before= for older comments
+    comment_count: int
+    comment_version: int
+
+
+class CommentChange(BaseModel):
+    """Result of adding or deleting a comment, plus the post's new comment count."""
+
+    post_id: int
+    comment: Comment | None = None  # the new comment (None after a delete)
+    deleted_id: int | None = None
+    comment_count: int
+    comment_version: int

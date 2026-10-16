@@ -7,8 +7,21 @@ import { PostImage } from "./PostImage";
 import { useLike } from "./useLike";
 import type { LiveCount } from "./useLiveCounts";
 
-export function PostCard({ post, live }: { post: Post; live?: LiveCount }) {
+export function PostCard({
+  post,
+  live,
+  comments,
+  single = false,
+}: {
+  post: Post;
+  live?: LiveCount;
+  comments?: LiveCount; // live comment count from the stream
+  single?: boolean; // on the post's own page, where the comments are listed below
+}) {
   const { liked, count, toggle, like } = useLike(post, live);
+  // `?? 0` covers an API deployed before comments existed (Vercel can go live first).
+  const commentCount =
+    comments && comments.version > (post.comment_version ?? 0) ? comments.count : (post.comment_count ?? 0);
   return (
     <article className="card">
       <header className="card-head">
@@ -32,6 +45,17 @@ export function PostCard({ post, live }: { post: Post; live?: LiveCount }) {
           {count} {count === 1 ? "like" : "likes"}
         </strong>
         {post.caption && <p>{post.caption}</p>}
+        {!single && (
+          <p>
+            <Link href={`/p/${post.id}`} className="muted">
+              {commentCount === 0
+                ? "Add a comment…"
+                : commentCount === 1
+                  ? "View 1 comment"
+                  : `View all ${commentCount} comments`}
+            </Link>
+          </p>
+        )}
       </footer>
     </article>
   );

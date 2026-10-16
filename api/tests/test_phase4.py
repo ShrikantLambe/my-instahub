@@ -190,8 +190,11 @@ async def test_sse_stream_snapshot_then_live(live_server, client, post_id, make_
             assert resp.status_code == 200
             assert resp.headers["content-type"].startswith("text/event-stream")
             lines = resp.aiter_lines()
-            snapshot = await asyncio.wait_for(read_events(lines, 1), timeout=5)
-            assert snapshot == [("likes", {"post_id": post_id, "like_count": 0, "like_version": 0})]
+            snapshot = await asyncio.wait_for(read_events(lines, 2), timeout=5)
+            assert snapshot == [
+                ("likes", {"post_id": post_id, "like_count": 0, "like_version": 0}),
+                ("comments", {"post_id": post_id, "comment_count": 0, "comment_version": 0}),
+            ]
 
             # The like is handled by *this* test process's app; the stream is served by the
             # other process. Redis pub/sub is what carries it across, as between instances.
