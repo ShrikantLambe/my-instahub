@@ -8,9 +8,9 @@ export const dynamic = "force-dynamic";
 
 export default async function ProfilePage({ params }: { params: Promise<{ username: string }> }) {
   const { username } = await params;
-  const user = await getUser(username);
+  // In parallel: both only need the username.
+  const [user, posts] = await Promise.all([getUser(username), getUserPosts(username)]);
   if (!user) notFound();
-  const posts = await getUserPosts(user.username);
 
   return (
     <section>

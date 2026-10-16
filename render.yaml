@@ -6,10 +6,12 @@ services:
     plan: free
     rootDir: api
     buildCommand: pip install uv && uv sync --frozen --no-dev
-    # Free instances have no pre-deploy step, so migrations and the demo seed run on boot.
-    # Both are idempotent, so restarts are safe.
-    startCommand: .venv/bin/python -m scripts.migrate && .venv/bin/python -m scripts.seed && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    # Free instances have no pre-deploy step, so migrations run on boot (idempotent, so
+    # restarts are safe). The demo seed is for local development only.
+    startCommand: .venv/bin/python -m scripts.migrate && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Liveness only: /health also pings Postgres and Redis, and Render probes often
+    # enough that it would spend the Upstash free tier's command quota.
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"

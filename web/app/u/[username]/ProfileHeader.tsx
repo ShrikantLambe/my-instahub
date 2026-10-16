@@ -74,7 +74,8 @@ export function ProfileHeader({ initialUser }: { initialUser: User }) {
             <span aria-hidden="true">📍</span> {user.city}
           </p>
         )}
-        {user.website && (
+        {/* The API only stores http(s) links; check again so no other scheme reaches an href. */}
+        {user.website && /^https?:\/\//i.test(user.website) && (
           <p>
             <a href={user.website} target="_blank" rel="noopener noreferrer nofollow ugc">
               {displayUrl(user.website)}

@@ -5,6 +5,7 @@ presigned PUT URL, and the browser uploads straight to the bucket.
 """
 
 import asyncio
+import logging
 from functools import lru_cache
 
 import boto3
@@ -12,6 +13,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from app.config import settings
+
+log = logging.getLogger(__name__)
 
 # Content type → file extension for the images we accept.
 IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
@@ -38,17 +41,30 @@ def presign_put(key: str, content_type: str) -> str:
     )
 
 
-async def object_exists(key: str) -> bool:
-    def head() -> bool:
+async def object_size(key: str) -> int | None:
+    """Size in bytes, or None if there's no such object."""
+
+    def head() -> int | None:
         try:
-            client().head_object(Bucket=settings.s3_bucket, Key=key)
-            return True
+            return client().head_object(Bucket=settings.s3_bucket, Key=key)["ContentLength"]
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
-                return False
+                return None
             raise
 
     return await asyncio.to_thread(head)
+
+
+async def object_exists(key: str) -> bool:
+    return await object_size(key) is not None
+
+
+async def delete_quietly(key: str) -> None:
+    """Best effort: a leftover object is only storage, so failures are just logged."""
+    try:
+        await asyncio.to_thread(client().delete_object, Bucket=settings.s3_bucket, Key=key)
+    except Exception:
+        log.warning("could not delete %s from the bucket", key, exc_info=True)
 
 
 def public_url(key: str) -> str:

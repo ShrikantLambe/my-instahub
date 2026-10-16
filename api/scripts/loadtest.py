@@ -240,7 +240,9 @@ async def main() -> None:
     seconds = float(args.duration.rstrip("s"))
     args.users = args.users or int(args.rate * seconds * 1.2) + 10
     # A throwaway signing secret unless one is configured: the API under test gets the same.
-    secret = settings.supabase_jwt_secret or secrets.token_urlsafe(32)
+    # Always a throwaway secret: the API under test gets the same one, and tokens signed
+    # with the real secret would be valid against the real deployment.
+    secret = secrets.token_urlsafe(32)
 
     results = []
     for mode in (["direct", "buffered"] if args.mode == "both" else [args.mode]):

@@ -170,7 +170,9 @@ async def main() -> None:
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=4, statement_cache_size=0)
     try:
         readers = await build_graph(pool, args.authors, args.posts, args.readers, args.follows)
-        secret = settings.supabase_jwt_secret or secrets.token_urlsafe(32)
+        # Always a throwaway secret: the API under test gets the same one, and tokens signed
+    # with the real secret would be valid against the real deployment.
+    secret = secrets.token_urlsafe(32)
         write_tokens(readers, secret)
         results = {"reads": [], "fanout": []}
         for mode in ("read", "write"):

@@ -56,8 +56,14 @@ async def on_like(pool: asyncpg.Pool, post_id: int, actor: UUID) -> tuple[UUID, 
 
 async def on_unlike(pool: asyncpg.Pool, post_id: int, actor: UUID) -> UUID | None:
     """Withdraw the like notification. Returns its recipient if one was removed."""
+    # recipient_id first, so the delete uses the notifications_one_like index.
     return await pool.fetchval(
-        "DELETE FROM notifications WHERE kind = 'like' AND post_id = $1 AND actor_id = $2 RETURNING recipient_id",
+        """
+        DELETE FROM notifications
+        WHERE recipient_id = (SELECT author_id FROM posts WHERE id = $1)
+          AND kind = 'like' AND post_id = $1 AND actor_id = $2
+        RETURNING recipient_id
+        """,
         post_id,
         actor,
     )

@@ -52,7 +52,7 @@ Until the API is hosted, the deployed site shows a "Can't reach the API" page in
 
 1. **Supabase:** create a free project. In Connect → Connection string, copy the **Session pooler** URI (Render can't reach the IPv6-only direct connection) and fill in your DB password.
 2. **Render:** New → Blueprint, pick this repo. It reads `render.yaml` and creates `instahub-api`. When prompted, set `DATABASE_URL` to the Supabase URI and `CORS_ORIGINS` to your Vercel URL; leave `REDIS_URL` blank for now.
-3. On boot the API runs migrations and seeds the demo users, then serves on `https://<service>.onrender.com`. Check `/health`: expect `"postgres":"ok"` and, with `REDIS_URL` blank, `"redis":"disabled"`.
+3. On boot the API runs migrations, then serves on `https://<service>.onrender.com`. (The demo users are for local development only: `make seed`.) Check `/health`: expect `"postgres":"ok"` and, with `REDIS_URL` blank, `"redis":"disabled"`. Render itself probes `/healthz`, which doesn't touch Postgres or Redis, so health checks don't spend the Upstash quota.
 4. **Vercel:** set `NEXT_PUBLIC_API_URL` to that Render URL and **redeploy** (the value is baked in at build time).
 
 ### Login and photos (Phase 1)
@@ -95,6 +95,13 @@ The free Render instance sleeps after 15 idle minutes and takes about a minute t
 - `write` (needs `REDIS_URL`): creating a post pushes its id into each follower's Redis feed, so opening the feed is one Redis range read plus a lookup of 10 posts. Authors with more than `FANOUT_MAX_FOLLOWERS` (10,000) followers aren't fanned out; their posts are merged in at read time. A missing feed is rebuilt from Postgres.
 
 `make feedtest` compares the two on a 60,000-follow graph. See [loadtest/FEED.md](loadtest/FEED.md): at 300 feed opens/s, read mode's p95 was 921 ms with Postgres saturated, while write mode stayed at 10 ms. Fanning one post out to 10,000 followers took about 65 ms.
+
+## Security and privacy
+
+- **Row-level security** is on for every table (migration 008). Supabase serves the `public` schema over its REST API to anyone holding the anon key, which ships in the web app. With RLS on and no policies, that key can read and change nothing; the API connects as the tables' owner and is unaffected. `test_every_table_has_row_level_security` fails if a new table forgets it. In Supabase, **Advisors → Security Advisor** should show no "RLS disabled" warnings.
+- **Photos are re-encoded in the browser** before upload (`web/lib/image.ts`): this strips EXIF metadata such as GPS location and device, and shrinks posts to 1,440 px and avatars to 320 px. The API refuses uploads over 10 MB when they're attached, and deletes a replaced or removed profile photo from the bucket.
+- **Rate limits** per user on likes, comments, follows, uploads, new posts, profile edits and stream tickets (`app/ratelimit.py`, one Redis call per write; `RATE_LIMITS=false` turns them off). Live streams are capped at `MAX_STREAMS` (500) per instance.
+- Not done yet: deleting a post or an account (and its photos), and an R2 lifecycle rule for uploads that were never attached to a post. In Cloudflare R2 → bucket → Settings → Object lifecycle rules, deleting objects after a few days under `posts/` won't work (posts live there too), so cleaning those needs a small job; it's listed as a follow-up.
 
 ## Status
 

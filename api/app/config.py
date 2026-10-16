@@ -26,7 +26,13 @@ class Settings(BaseSettings):
     s3_bucket: str = "instahub"
     # Public base URL that serves objects by key (R2 public URL or custom domain).
     image_base_url: str = "http://localhost:9000/instahub"
-    upload_url_ttl_seconds: int = 300
+    upload_url_ttl_seconds: int = 120  # short: a URL can be re-used until it expires
+    max_upload_bytes: int = 10 * 1024 * 1024  # checked when the upload is attached
+
+    # Abuse limits. Per-user write limits (see app/ratelimit.py) and a cap on open
+    # live-update streams per instance.
+    rate_limits: bool = True
+    max_streams: int = 500
 
     # Like counter strategy (Phase 6). "direct": every like updates posts.like_count in
     # the same statement (simple, exact, but a hot post's row becomes a lock queue).
