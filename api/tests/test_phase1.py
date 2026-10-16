@@ -92,7 +92,8 @@ async def test_profile_lifecycle(client):
 
     resp = await client.put("/me", json={"username": "Dana_1", "display_name": "Dana"}, headers=headers)
     assert resp.status_code == 200
-    assert resp.json() == {"id": str(user_id), "username": "dana_1", "display_name": "Dana"}
+    blank = dict.fromkeys(["avatar_key", "avatar_url", "bio", "city", "website"])
+    assert resp.json() == {"id": str(user_id), "username": "dana_1", "display_name": "Dana", **blank}
 
     assert (await client.get("/me", headers=headers)).json()["username"] == "dana_1"
     assert (await client.get("/users/dana_1")).status_code == 200

@@ -1,5 +1,7 @@
 import re
 from datetime import datetime
+from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from asyncpg import Record
@@ -10,10 +12,25 @@ from app import storage
 USERNAME_RE = re.compile(r"^[a-z0-9_.]{3,30}$")
 
 
+def avatar_url(key: str | None) -> str | None:
+    return storage.public_url(key) if key else None
+
+
 class Author(BaseModel):
     id: UUID
     username: str
     display_name: str | None
+    avatar_url: str | None = None
+
+    @classmethod
+    def from_row(cls, row: Record) -> "Author":
+        """From a row with author_id / author_username / ... columns."""
+        return cls(
+            id=row["author_id"],
+            username=row["author_username"],
+            display_name=row["author_display_name"],
+            avatar_url=avatar_url(row["author_avatar_key"]),
+        )
 
 
 class Post(BaseModel):
@@ -35,11 +52,7 @@ class Post(BaseModel):
     def from_row(cls, row: Record) -> "Post":
         return cls(
             id=row["id"],
-            author=Author(
-                id=row["author_id"],
-                username=row["author_username"],
-                display_name=row["author_display_name"],
-            ),
+            author=Author.from_row(row),
             caption=row["caption"],
             image_key=row["image_key"],
             image_url=storage.public_url(row["image_key"]),
@@ -58,6 +71,10 @@ class User(BaseModel):
     username: str
     display_name: str | None
     avatar_key: str | None
+    avatar_url: str | None = None
+    bio: str | None = None
+    city: str | None = None
+    website: str | None = None
     created_at: datetime
     post_count: int
     follower_count: int
@@ -66,9 +83,37 @@ class User(BaseModel):
 
 
 class Profile(BaseModel):
+    """The signed-in user's own profile (GET/PUT/PATCH /me)."""
+
     id: UUID
     username: str
     display_name: str | None
+    avatar_key: str | None = None
+    avatar_url: str | None = None
+    bio: str | None = None
+    city: str | None = None
+    website: str | None = None
+
+    @classmethod
+    def from_row(cls, row: Record) -> "Profile":
+        return cls(**dict(row), avatar_url=avatar_url(row["avatar_key"]))
+
+
+def _username(v: str) -> str:
+    v = v.strip().lower()
+    if not USERNAME_RE.fullmatch(v):
+        raise ValueError("use 3-30 letters, numbers, dots or underscores")
+    return v
+
+
+def _optional_text(v: str | None, limit: int) -> str | None:
+    """Trim; blank means "clear it"."""
+    if v is None:
+        return None
+    v = v.strip()
+    if len(v) > limit:
+        raise ValueError(f"keep it under {limit} characters")
+    return v or None
 
 
 class ProfileIn(BaseModel):
@@ -78,14 +123,65 @@ class ProfileIn(BaseModel):
     @field_validator("username")
     @classmethod
     def check_username(cls, v: str) -> str:
-        v = v.strip().lower()
-        if not USERNAME_RE.fullmatch(v):
-            raise ValueError("use 3-30 letters, numbers, dots or underscores")
+        return _username(v)
+
+
+class ProfileUpdate(BaseModel):
+    """PATCH /me: only the fields sent are changed; null or "" clears a field."""
+
+    username: str | None = None
+    display_name: str | None = None
+    bio: str | None = None
+    city: str | None = None
+    website: str | None = None
+    avatar_key: str | None = None  # from POST /uploads with purpose "avatar"; null removes it
+
+    @field_validator("username")
+    @classmethod
+    def check_username(cls, v: str | None) -> str:
+        if v is None:
+            raise ValueError("username can't be removed")
+        return _username(v)
+
+    @field_validator("display_name")
+    @classmethod
+    def check_display_name(cls, v: str | None) -> str | None:
+        return _optional_text(v, 50)
+
+    @field_validator("bio")
+    @classmethod
+    def check_bio(cls, v: str | None) -> str | None:
+        v = _optional_text(v, 150)
+        if v and v.count("\n") > 4:
+            raise ValueError("use at most 5 lines")
+        return v
+
+    @field_validator("city")
+    @classmethod
+    def check_city(cls, v: str | None) -> str | None:
+        v = _optional_text(v, 60)
+        return " ".join(v.split()) if v else v
+
+    @field_validator("website")
+    @classmethod
+    def check_website(cls, v: str | None) -> str | None:
+        """A plain http(s) link; "example.com" becomes "https://example.com". Anything
+        else (javascript:, data:, ...) is refused, since it ends up in an href."""
+        v = _optional_text(v, 200)
+        if not v:
+            return v
+        if "://" not in v:
+            v = "https://" + v
+        parts = urlsplit(v)
+        host = parts.hostname or ""
+        if parts.scheme not in ("http", "https") or "." not in host or " " in v:
+            raise ValueError("enter a web address like example.com")
         return v
 
 
 class UploadIn(BaseModel):
     content_type: str
+    purpose: Literal["post", "avatar"] = "post"
 
     @field_validator("content_type")
     @classmethod
@@ -145,11 +241,7 @@ class Comment(BaseModel):
         return cls(
             id=row["id"],
             post_id=row["post_id"],
-            author=Author(
-                id=row["author_id"],
-                username=row["author_username"],
-                display_name=row["author_display_name"],
-            ),
+            author=Author.from_row(row),
             body=row["body"],
             created_at=row["created_at"],
         )

@@ -12,6 +12,7 @@ import {
   type Post,
 } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
+import { Avatar } from "./Avatar";
 import type { LiveCount } from "./useLiveCounts";
 
 type Shown = Comment & { pending?: boolean }; // pending: posted, not confirmed yet
@@ -218,26 +219,31 @@ export function Comments({
           .filter((c) => !hidden.has(c.id))
           .map((c) => (
             <li key={c.id} className={c.pending ? "pending" : undefined}>
-              <p>
-                <Link href={`/u/${c.author.username}`} className="comment-author">
-                  {c.author.username}
-                </Link>{" "}
-                <span className="comment-body">{c.body}</span>
-              </p>
-              <p className="comment-meta">
-                {c.pending ? (
-                  "Posting…"
-                ) : (
-                  <time dateTime={c.created_at} suppressHydrationWarning>
-                    {timeAgo(c.created_at)}
-                  </time>
-                )}
-                {canDelete(c) && (
-                  <button type="button" className="link" onClick={() => void remove(c)}>
-                    Delete
-                  </button>
-                )}
-              </p>
+              <Link href={`/u/${c.author.username}`} className="comment-avatar" tabIndex={-1} aria-hidden="true">
+                <Avatar user={c.author} size={28} />
+              </Link>
+              <div>
+                <p>
+                  <Link href={`/u/${c.author.username}`} className="comment-author">
+                    {c.author.username}
+                  </Link>{" "}
+                  <span className="comment-body">{c.body}</span>
+                </p>
+                <p className="comment-meta">
+                  {c.pending ? (
+                    "Posting…"
+                  ) : (
+                    <time dateTime={c.created_at} suppressHydrationWarning>
+                      {timeAgo(c.created_at)}
+                    </time>
+                  )}
+                  {canDelete(c) && (
+                    <button type="button" className="link" onClick={() => void remove(c)}>
+                      Delete
+                    </button>
+                  )}
+                </p>
+              </div>
             </li>
           ))}
       </ul>
