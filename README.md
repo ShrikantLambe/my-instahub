@@ -10,9 +10,10 @@ A mini Instagram on a $0 stack, built with the same blocks a real social network
 api/            FastAPI service (Python, uv)
   app/          routes, config, DB pool, response schemas
   migrations/   plain SQL, applied in filename order
-  scripts/      migrate.py, seed.py
+  scripts/      migrate.py, seed.py, reconcile.py, loadtest.py
   tests/        pytest against a real Postgres
 web/            Next.js app (App Router, TypeScript)
+loadtest/       k6 script for one hot post, plus RESULTS.md
 docker-compose.yml   local Postgres 16, Redis 7 and an S3 stand-in (moto) for R2
 ```
 
@@ -77,6 +78,15 @@ Until the API is hosted, the deployed site shows a "Can't reach the API" page in
 
 The free Render instance sleeps after 15 idle minutes and takes about a minute to wake, so the first page load after a break may show the error page; refresh once it's up.
 
+### Hot posts (Phase 6)
+
+`COUNTER_MODE` picks how likes update the count:
+
+- `direct` (default): each like updates `posts.like_count` in the same statement. Simple and exact. Under a burst on one post, every like waits for that row's lock.
+- `buffered` (needs `REDIS_URL`): a like only inserts its row. The live count lives in Redis, and a background flusher writes the totals to Postgres every `FLUSH_INTERVAL_SECONDS` (2 s) in one batched `UPDATE`. A reconcile job (every `RECONCILE_INTERVAL_SECONDS`, or `make reconcile`) recounts from the `likes` table and repairs drift.
+
+`make loadtest` (needs [k6](https://k6.io) and a local database) compares the two. See [loadtest/RESULTS.md](loadtest/RESULTS.md): on a 4-CPU box, direct mode tops out around 770 likes/s with up to 38 sessions waiting on the hot row's lock. Buffered mode reaches 1,150/s with no lock waits. Production stays on `direct`, because the flusher's polling uses up Upstash's free command quota.
+
 ## Status
 
 | Phase | What | State |
@@ -86,7 +96,7 @@ The free Render instance sleeps after 15 idle minutes and takes about a minute t
 | 2 | Idempotent like/unlike, `viewer_has_liked`, optimistic UI | ✅ done |
 | 3 | Follow/unfollow, home feed with cursor pagination | ✅ done |
 | 4 | Redis cache-aside, pub/sub, SSE live counts | ✅ done |
-| 5 | Deploy: Vercel, Render, Supabase, Upstash, R2 | mostly done (Upstash is the last piece) |
-| 6 | Load-test a hot post, Redis-buffered counter | |
+| 5 | Deploy: Vercel, Render, Supabase, Upstash, R2 | ✅ done |
+| 6 | Load-test a hot post, Redis-buffered counter, reconcile job | ✅ done |
 
 Endpoints: `GET /health`, `GET /posts`, `GET /posts/{id}`, `GET /users/{username}`, `GET /users/{username}/posts`; signed in: `GET/PUT /me`, `POST /uploads`, `POST /posts`, `POST/DELETE /posts/{id}/like`, `POST/DELETE /users/{username}/follow`, `GET /feed?before=<cursor>` (people you follow plus yourself, newest first). Read endpoints also accept a token and then fill `viewer_has_liked` / `viewer_follows`. Live: `GET /likes?ids=1,2` (cache-aside counts) and `GET /stream?posts=1,2` (Server-Sent Events: a snapshot, then every change, each carrying `like_version`). The seed posts point at sample image keys that don't exist, so they show a placeholder tile.

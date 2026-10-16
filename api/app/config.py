@@ -28,6 +28,22 @@ class Settings(BaseSettings):
     image_base_url: str = "http://localhost:9000/instahub"
     upload_url_ttl_seconds: int = 300
 
+    # Like counter strategy (Phase 6). "direct": every like updates posts.like_count in
+    # the same statement (simple, exact, but a hot post's row becomes a lock queue).
+    # "buffered": likes only insert their row; counts live in Redis and a background job
+    # flushes the totals to Postgres in batches. Buffered needs REDIS_URL.
+    counter_mode: str = "direct"
+    flush_interval_seconds: float = 2.0
+    reconcile_interval_seconds: float = 900.0
+
+    @field_validator("counter_mode")
+    @classmethod
+    def known_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("direct", "buffered"):
+            raise ValueError("COUNTER_MODE must be 'direct' or 'buffered'")
+        return v
+
     @field_validator("redis_url")
     @classmethod
     def upstash_needs_tls(cls, v: str) -> str:
