@@ -116,13 +116,16 @@ async def posts_updates(pool: asyncpg.Pool) -> int:
     return await pool.fetchval("SELECT n_tup_upd FROM pg_stat_user_tables WHERE relname = 'posts'")
 
 
-def start_api(mode: str, port: int, workers: int, secret: str, redis_url: str) -> subprocess.Popen:
+def start_api(
+    mode: str, port: int, workers: int, secret: str, redis_url: str, extra_env: dict | None = None
+) -> subprocess.Popen:
     env = {
         **os.environ,
         "COUNTER_MODE": mode,
         "REDIS_URL": redis_url,
         "SUPABASE_JWT_SECRET": secret,
         "DATABASE_URL": settings.database_url,
+        **(extra_env or {}),
     }
     return subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port),

@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app import cache, comments, counter, cursor, db, follows, likes, notifications, storage
+from app import cache, comments, counter, cursor, db, feed, follows, likes, notifications, storage
 from app.events import broker
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
@@ -70,6 +70,20 @@ def buffered() -> bool:
     return settings.counter_mode == "buffered" and getattr(app.state, "redis", None) is not None
 
 
+def fanout() -> bool:
+    """Fan-out-on-write feed in effect (it needs Redis; without it we read from Postgres)."""
+    return settings.feed_mode == "write" and getattr(app.state, "redis", None) is not None
+
+
+async def feed_side_effect(action) -> None:
+    """Feeds are a cache over Postgres: if updating one fails, log it and carry on. The
+    feed heals when it expires and is rebuilt."""
+    try:
+        await action
+    except Exception:
+        log.warning("feed update failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.open_pool()
@@ -88,6 +102,8 @@ async def lifespan(app: FastAPI):
         )
     elif settings.counter_mode == "buffered":
         log.warning("COUNTER_MODE=buffered needs REDIS_URL; using direct mode")
+    if settings.feed_mode == "write" and app.state.redis is None:
+        log.warning("FEED_MODE=write needs REDIS_URL; building feeds on read")
     yield
     if background is not None:
         background.cancel()
@@ -138,6 +154,7 @@ async def health() -> dict:
         "status": status,
         **checks,
         "counter_mode": "buffered" if buffered() else "direct",
+        "feed_mode": "write" if fanout() else "read",
         "live_connections": broker.connections,
     }
 
@@ -338,6 +355,10 @@ async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) ->
         )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=409, detail="create your profile first") from None
+    if fanout():
+        await feed_side_effect(
+            feed.on_post(app.state.redis, db.get_pool(), post_id, user_id, settings.fanout_max_followers)
+        )
     return await fetch_post(post_id)
 
 
@@ -386,6 +407,8 @@ async def follow_user(username: str, user_id: UUID = Depends(current_user_id)) -
         raise HTTPException(status_code=409, detail="create your profile first") from None
     if result.changed:
         await notify(notifications.on_follow(db.get_pool(), result.followee, user_id))
+        if fanout():
+            await feed_side_effect(feed.on_follow(app.state.redis, db.get_pool(), user_id, result.followee))
     return FollowOut(username=username, following=True, follower_count=result.follower_count)
 
 
@@ -397,6 +420,8 @@ async def unfollow_user(username: str, user_id: UUID = Depends(current_user_id))
         raise HTTPException(status_code=404, detail="user not found") from None
     if result.changed:
         await notify(notifications.on_unfollow(db.get_pool(), result.followee, user_id))
+        if fanout():
+            await feed_side_effect(feed.on_unfollow(app.state.redis, db.get_pool(), user_id, result.followee))
     return FollowOut(username=username, following=False, follower_count=result.follower_count)
 
 
@@ -406,15 +431,31 @@ async def home_feed(
     limit: int = Query(10, ge=1, le=50),
     user_id: UUID = Depends(current_user_id),
 ) -> FeedPage:
-    """Home feed, fan-out on read: the latest posts from people you follow, plus your own.
+    """Home feed: the latest posts from people you follow, plus your own.
 
-    Built at request time from follows + posts. The alternative, fan-out on write,
-    pushes each new post id into every follower's Redis list; see design.md.
+    FEED_MODE=read builds it here from follows + posts (fan-out on read). FEED_MODE=write
+    reads the list precomputed in Redis when posts were created (fan-out on write); see
+    app/feed.py. Both return the same pages and cursors.
     """
     try:
         after_ts, after_id = cursor.decode(before) if before else (None, None)
     except cursor.BadCursor:
         raise HTTPException(status_code=400, detail="invalid cursor") from None
+    if fanout():
+        before_key = (after_ts, after_id) if before else None
+        ids = await feed.page_ids(app.state.redis, db.get_pool(), user_id, before_key, limit)
+        if ids is not None:  # None: past the cached window, so read Postgres below
+            rows = await db.get_pool().fetch(
+                f"SELECT {POST_COLUMNS} FROM posts p JOIN users u ON u.id = p.author_id WHERE p.id = ANY($1::bigint[])",
+                ids,
+            )
+            by_id = {r["id"]: r for r in rows}
+            page_rows = [by_id[i] for i in ids if i in by_id][:limit]
+            posts = await with_viewer_likes([Post.from_row(r) for r in page_rows], user_id)
+            more = len(ids) > limit
+            last = page_rows[-1] if page_rows else None
+            next_cursor = cursor.encode(last["created_at"], last["id"]) if more and last else None
+            return FeedPage(posts=posts, next_cursor=next_cursor)
     rows = await db.get_pool().fetch(
         f"""
         SELECT {POST_COLUMNS}

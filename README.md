@@ -87,6 +87,15 @@ The free Render instance sleeps after 15 idle minutes and takes about a minute t
 
 `make loadtest` (needs [k6](https://k6.io) and a local database) compares the two. See [loadtest/RESULTS.md](loadtest/RESULTS.md): on a 4-CPU box, direct mode tops out around 770 likes/s with up to 38 sessions waiting on the hot row's lock. Buffered mode reaches 1,150/s with no lock waits. Production stays on `direct`, because the flusher's polling uses up Upstash's free command quota.
 
+### Home feed: fan-out on read or write (Phase 10)
+
+`FEED_MODE` picks how the home feed is built:
+
+- `read` (default): each request queries "latest posts by everyone I follow" in Postgres.
+- `write` (needs `REDIS_URL`): creating a post pushes its id into each follower's Redis feed, so opening the feed is one Redis range read plus a lookup of 10 posts. Authors with more than `FANOUT_MAX_FOLLOWERS` (10,000) followers aren't fanned out; their posts are merged in at read time. A missing feed is rebuilt from Postgres.
+
+`make feedtest` compares the two on a 60,000-follow graph. See [loadtest/FEED.md](loadtest/FEED.md): at 300 feed opens/s, read mode's p95 was 921 ms with Postgres saturated, while write mode stayed at 10 ms. Fanning one post out to 10,000 followers took about 65 ms.
+
 ## Status
 
 | Phase | What | State |
@@ -101,5 +110,6 @@ The free Render instance sleeps after 15 idle minutes and takes about a minute t
 | 7 | Comments: add, delete, cursor paging, live over SSE | ✅ done |
 | 8 | Profiles: photo, bio, city, website, edit page | ✅ done |
 | 9 | Notifications: likes, comments, follows; live unread badge | ✅ done |
+| 10 | Home feed fan-out on write, with a celebrity hybrid; load-tested | ✅ done |
 
 Endpoints: `GET /health`, `GET /posts`, `GET /posts/{id}`, `GET /users/{username}`, `GET /users/{username}/posts`, `GET /posts/{id}/comments?before=<cursor>` (newest first); signed in: `GET/PUT /me`, `PATCH /me` (edit username, display name, bio, city, website, `avatar_key`; only the fields sent change), `POST /uploads` (`purpose`: `post` or `avatar`), `POST /posts`, `POST/DELETE /posts/{id}/like`, `POST/DELETE /users/{username}/follow`, `GET /feed?before=<cursor>` (people you follow plus yourself, newest first), `POST /posts/{id}/comments`, `DELETE /comments/{id}` (by the comment's author or the post's author), `GET /notifications?before=<cursor>`, `GET /notifications/unread`, `POST /notifications/read`, `POST /notifications/ticket` (a 60-second single-use ticket for `GET /notifications/stream?ticket=…`, since EventSource can't send the token). Read endpoints also accept a token and then fill `viewer_has_liked` / `viewer_follows`. Live: `GET /likes?ids=1,2` (cache-aside counts) and `GET /stream?posts=1,2` (Server-Sent Events: a snapshot, then every change. `likes` events carry `like_version`; `comments` events carry `comment_count`/`comment_version` plus the added `comment` or the `deleted_id`). The seed posts point at sample image keys that don't exist, so they show a placeholder tile.

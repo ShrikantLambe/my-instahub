@@ -36,12 +36,27 @@ class Settings(BaseSettings):
     flush_interval_seconds: float = 2.0
     reconcile_interval_seconds: float = 900.0
 
+    # Home feed strategy. "read": built per request from Postgres (fan-out on read).
+    # "write": each new post is pushed into followers' Redis feeds (fan-out on write);
+    # authors with more than FANOUT_MAX_FOLLOWERS followers are merged in at read time
+    # instead. Write needs REDIS_URL. See app/feed.py and loadtest/FEED.md.
+    feed_mode: str = "read"
+    fanout_max_followers: int = 10_000
+
     @field_validator("counter_mode")
     @classmethod
     def known_mode(cls, v: str) -> str:
         v = v.strip().lower()
         if v not in ("direct", "buffered"):
             raise ValueError("COUNTER_MODE must be 'direct' or 'buffered'")
+        return v
+
+    @field_validator("feed_mode")
+    @classmethod
+    def known_feed_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("read", "write"):
+            raise ValueError("FEED_MODE must be 'read' or 'write'")
         return v
 
     @field_validator("redis_url")
