@@ -276,3 +276,54 @@ class CommentChange(BaseModel):
     deleted_id: int | None = None
     comment_count: int
     comment_version: int
+
+
+class NotificationPost(BaseModel):
+    id: int
+    image_url: str
+
+
+class NotificationComment(BaseModel):
+    id: int
+    body: str
+
+
+class Notification(BaseModel):
+    id: int
+    kind: Literal["like", "comment", "follow"]
+    actor: Author
+    post: NotificationPost | None  # the liked / commented post; None for follows
+    comment: NotificationComment | None
+    created_at: datetime
+    read: bool
+
+    @classmethod
+    def from_row(cls, row: Record) -> "Notification":
+        return cls(
+            id=row["id"],
+            kind=row["kind"],
+            actor=Author.from_row(row),
+            post=NotificationPost(id=row["post_id"], image_url=storage.public_url(row["post_image_key"]))
+            if row["post_id"]
+            else None,
+            comment=NotificationComment(id=row["comment_id"], body=row["comment_body"])
+            if row["comment_id"]
+            else None,
+            created_at=row["created_at"],
+            read=row["read_at"] is not None,
+        )
+
+
+class NotificationPage(BaseModel):
+    notifications: list[Notification]  # newest first
+    next_cursor: str | None
+    unread_count: int
+
+
+class UnreadOut(BaseModel):
+    unread_count: int
+
+
+class StreamTicket(BaseModel):
+    ticket: str
+    expires_in: int

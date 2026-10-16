@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app import cache, comments, counter, cursor, db, follows, likes, storage
+from app import cache, comments, counter, cursor, db, follows, likes, notifications, storage
 from app.events import broker
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
@@ -31,11 +31,15 @@ from app.schemas import (
     FollowOut,
     LikeCountOut,
     LikeOut,
+    Notification,
+    NotificationPage,
     Post,
     PostIn,
     Profile,
     ProfileIn,
     ProfileUpdate,
+    StreamTicket,
+    UnreadOut,
     UploadIn,
     UploadOut,
     User,
@@ -350,6 +354,7 @@ async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> L
         raise HTTPException(status_code=409, detail="create your profile first") from None
     if changed:
         await after_like_change(post_id, value)
+        await notify(notifications.on_like(db.get_pool(), post_id, user_id))
     return LikeOut(post_id=post_id, liked=True, like_count=value.count, like_version=value.version)
 
 
@@ -364,6 +369,7 @@ async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) ->
         raise HTTPException(status_code=404, detail="post not found") from None
     if changed:
         await after_like_change(post_id, value)
+        await notify(notifications.on_unlike(db.get_pool(), post_id, user_id))
     return LikeOut(post_id=post_id, liked=False, like_count=value.count, like_version=value.version)
 
 
@@ -371,23 +377,27 @@ async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) ->
 async def follow_user(username: str, user_id: UUID = Depends(current_user_id)) -> FollowOut:
     """Idempotent: following someone you already follow changes nothing."""
     try:
-        count = await follows.follow(db.get_pool(), user_id, username)
+        result = await follows.follow(db.get_pool(), user_id, username)
     except follows.UserNotFound:
         raise HTTPException(status_code=404, detail="user not found") from None
     except asyncpg.CheckViolationError:
         raise HTTPException(status_code=400, detail="you can't follow yourself") from None
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=409, detail="create your profile first") from None
-    return FollowOut(username=username, following=True, follower_count=count)
+    if result.changed:
+        await notify(notifications.on_follow(db.get_pool(), result.followee, user_id))
+    return FollowOut(username=username, following=True, follower_count=result.follower_count)
 
 
 @app.delete("/users/{username}/follow", response_model=FollowOut)
 async def unfollow_user(username: str, user_id: UUID = Depends(current_user_id)) -> FollowOut:
     try:
-        count = await follows.unfollow(db.get_pool(), user_id, username)
+        result = await follows.unfollow(db.get_pool(), user_id, username)
     except follows.UserNotFound:
         raise HTTPException(status_code=404, detail="user not found") from None
-    return FollowOut(username=username, following=False, follower_count=count)
+    if result.changed:
+        await notify(notifications.on_unfollow(db.get_pool(), result.followee, user_id))
+    return FollowOut(username=username, following=False, follower_count=result.follower_count)
 
 
 @app.get("/feed", response_model=FeedPage)
@@ -465,6 +475,7 @@ async def add_comment(post_id: int, body: CommentIn, user_id: UUID = Depends(cur
         post_id=post_id, comment=Comment.from_row(row), comment_count=count.count, comment_version=count.version
     )
     await broker.publish({"type": "comments", **change.model_dump(mode="json")})
+    await notify(notifications.on_comment(db.get_pool(), post_id, row["id"], user_id))
     return change
 
 
@@ -472,15 +483,19 @@ async def add_comment(post_id: int, body: CommentIn, user_id: UUID = Depends(cur
 async def delete_comment(comment_id: int, user_id: UUID = Depends(current_user_id)) -> CommentChange:
     """The comment's author can delete it, and so can the author of the post it's on."""
     try:
-        post_id, count = await comments.delete(db.get_pool(), comment_id, user_id)
+        deleted = await comments.delete(db.get_pool(), comment_id, user_id)
     except comments.CommentNotFound:
         raise HTTPException(status_code=404, detail="comment not found") from None
     except comments.NotAllowed:
         raise HTTPException(status_code=403, detail="you can only delete your own comments") from None
     change = CommentChange(
-        post_id=post_id, deleted_id=comment_id, comment_count=count.count, comment_version=count.version
+        post_id=deleted.post_id,
+        deleted_id=comment_id,
+        comment_count=deleted.count.count,
+        comment_version=deleted.count.version,
     )
     await broker.publish({"type": "comments", **change.model_dump(mode="json")})
+    await refresh_badge(deleted.post_author)  # its notification, if any, went with it
     return change
 
 
@@ -566,6 +581,117 @@ async def stream(posts: str = Query(..., description="comma-separated post ids t
                     yield sse(kind, {k: v for k, v in event.items() if k != "type"})
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"  # keeps proxies from closing an idle connection
+        finally:
+            broker.unsubscribe(sub)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --- Notifications -----------------------------------------------------------------
+
+
+async def _push_unread(recipient: UUID, row: asyncpg.Record | None = None) -> None:
+    """Tell the recipient's open tabs their new unread count (and the new notification)."""
+    event = {
+        "type": "notification",
+        "user_id": str(recipient),
+        "unread_count": await notifications.unread_count(db.get_pool(), recipient),
+    }
+    if row is not None:
+        event["notification"] = Notification.from_row(row).model_dump(mode="json")
+    await broker.publish(event)
+
+
+async def notify(action) -> None:
+    """Run a notifications.on_* call after the action committed. Best effort: a failure
+    here is logged, never turned into an error for the like, comment or follow."""
+    try:
+        result = await action
+        if result is None:
+            return
+        if isinstance(result, tuple):  # (recipient, row): a new notification
+            await _push_unread(*result)
+        else:  # recipient whose notification was withdrawn
+            await _push_unread(result)
+    except Exception:
+        log.warning("notification side effect failed", exc_info=True)
+
+
+async def refresh_badge(recipient: UUID) -> None:
+    """Push a recipient's current unread count (after reads or cascaded deletes)."""
+    try:
+        await _push_unread(recipient)
+    except Exception:
+        log.warning("unread count push failed", exc_info=True)
+
+
+@app.get("/notifications", response_model=NotificationPage)
+async def list_notifications(
+    before: str | None = Query(None, description="next_cursor from the previous page"),
+    limit: int = Query(20, ge=1, le=50),
+    user_id: UUID = Depends(current_user_id),
+) -> NotificationPage:
+    try:
+        after = cursor.decode(before) if before else None
+    except cursor.BadCursor:
+        raise HTTPException(status_code=400, detail="invalid cursor") from None
+    pool = db.get_pool()
+    rows, more = await notifications.page(pool, user_id, after, limit)
+    return NotificationPage(
+        notifications=[Notification.from_row(r) for r in rows],
+        next_cursor=cursor.encode(rows[-1]["created_at"], rows[-1]["id"]) if more else None,
+        unread_count=await notifications.unread_count(pool, user_id),
+    )
+
+
+@app.get("/notifications/unread", response_model=UnreadOut)
+async def unread_notifications(user_id: UUID = Depends(current_user_id)) -> UnreadOut:
+    return UnreadOut(unread_count=await notifications.unread_count(db.get_pool(), user_id))
+
+
+@app.post("/notifications/read", response_model=UnreadOut)
+async def read_notifications(user_id: UUID = Depends(current_user_id)) -> UnreadOut:
+    """Mark everything read (opening the activity page does this, like Instagram)."""
+    await notifications.mark_all_read(db.get_pool(), user_id)
+    await refresh_badge(user_id)  # other open tabs clear their badge too
+    return UnreadOut(unread_count=0)
+
+
+@app.post("/notifications/ticket", response_model=StreamTicket)
+async def notification_ticket(user_id: UUID = Depends(current_user_id)) -> StreamTicket:
+    """EventSource can't send an Authorization header, so the browser trades its token
+    for a short-lived, single-use ticket and opens the stream with that."""
+    ticket = await notifications.issue_ticket(app.state.redis, user_id)
+    return StreamTicket(ticket=ticket, expires_in=notifications.TICKET_TTL)
+
+
+@app.get("/notifications/stream")
+async def notification_stream(ticket: str = Query(..., description="from POST /notifications/ticket")):
+    """Server-Sent Events for one user: `unread` (the current count) first, then a
+    `notification` event (unread_count plus the new notification, if any) per change.
+
+    The ticket is used up by opening the stream, so after a disconnect the browser gets a
+    fresh ticket and reconnects; the opening `unread` event catches it up.
+    """
+    user_id = await notifications.redeem_ticket(app.state.redis, ticket)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="ticket expired or already used")
+    sub = broker.subscribe(set(), user_id=str(user_id))
+
+    async def events():
+        try:
+            yield "retry: 3000\n\n"
+            yield sse("unread", {"unread_count": await notifications.unread_count(db.get_pool(), user_id)})
+            while True:
+                try:
+                    event = await asyncio.wait_for(sub.queue.get(), timeout=HEARTBEAT_SECONDS)
+                    yield sse("notification", {k: v for k, v in event.items() if k not in ("type", "user_id")})
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
         finally:
             broker.unsubscribe(sub)
 

@@ -129,3 +129,19 @@ export async function apiFetch<T>(path: string, token: string, init: RequestInit
   if (!res.ok) throw new ApiError(res.status, errorMessage(body, res.status));
   return body as T;
 }
+
+export type Notification = {
+  id: number;
+  kind: "like" | "comment" | "follow";
+  actor: Author;
+  post: { id: number; image_url: string } | null;
+  comment: { id: number; body: string } | null;
+  created_at: string;
+  read: boolean;
+};
+
+export type NotificationPage = {
+  notifications: Notification[]; // newest first
+  next_cursor: string | null;
+  unread_count: number;
+};

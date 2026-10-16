@@ -11,6 +11,7 @@ import {
   type CommentPage,
   type Post,
 } from "@/lib/api";
+import { timeAgo } from "@/lib/time";
 import { useAuth } from "./AuthProvider";
 import { Avatar } from "./Avatar";
 import type { LiveCount } from "./useLiveCounts";
@@ -264,14 +265,4 @@ export function Comments({
 function addMissing(cur: Shown[], older: Comment[]): Shown[] {
   const seen = new Set(cur.map((c) => c.id));
   return [...cur, ...older.filter((c) => !seen.has(c.id))];
-}
-
-// Instagram-style short ages: "now", "5m", "3h", "2d", then a date.
-function timeAgo(iso: string): string {
-  const s = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (s < 60) return "now";
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  if (s < 7 * 86400) return `${Math.floor(s / 86400)}d`;
-  return new Date(iso).toLocaleDateString();
 }
