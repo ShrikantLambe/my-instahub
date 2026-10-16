@@ -25,6 +25,8 @@ os.environ["S3_BUCKET"] = "instahub-test"
 os.environ["IMAGE_BASE_URL"] = "https://cdn.example/instahub"
 # Phase 4 needs a real Redis (docker compose up); db 15 keeps tests away from dev data.
 os.environ["REDIS_URL"] = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
+# Many tests act in bulk as one user; test_phase11_hardening.py turns the limits back on.
+os.environ["RATE_LIMITS"] = "false"
 
 
 @pytest.fixture(scope="session")

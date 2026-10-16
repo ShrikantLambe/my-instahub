@@ -3,11 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiFetch, type Profile, type Upload } from "@/lib/api";
+import { prepareImage } from "@/lib/image";
 import { useAuth } from "../../AuthProvider";
 import { Avatar } from "../../Avatar";
 
 const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
-const MAX_BYTES = 5 * 1024 * 1024;
+const MAX_BYTES = 25 * 1024 * 1024; // before resizing to AVATAR_SIDE
+const AVATAR_SIDE = 320; // px: shown at most 84 px wide, so this is sharp on any screen
 const BIO_MAX = 150;
 
 type Fields = { username: string; display_name: string; bio: string; city: string; website: string };
@@ -55,7 +57,7 @@ export default function EditProfilePage() {
     setError(null);
     if (!picked) return;
     if (!ACCEPTED.includes(picked.type)) return setError("Use a JPEG, PNG or WebP image.");
-    if (picked.size > MAX_BYTES) return setError("That image is over 5 MB.");
+    if (picked.size > MAX_BYTES) return setError("That image is over 25 MB.");
     setPhoto(picked);
     setRemovePhoto(false);
   }
@@ -74,14 +76,18 @@ export default function EditProfilePage() {
       }
       if (photo) {
         setStatus("Uploading photo…");
+        // Resized and re-encoded first, which also drops location metadata.
+        const image = await prepareImage(photo, AVATAR_SIDE).catch(() => {
+          throw new Error("Couldn't read that image. Try a different photo.");
+        });
         const upload = await apiFetch<Upload>("/uploads", token, {
           method: "POST",
-          body: JSON.stringify({ content_type: photo.type, purpose: "avatar" }),
+          body: JSON.stringify({ content_type: image.type, purpose: "avatar" }),
         });
         const put = await fetch(upload.upload_url, {
           method: "PUT",
-          headers: { "Content-Type": photo.type },
-          body: photo,
+          headers: { "Content-Type": image.type },
+          body: image.blob,
         });
         if (!put.ok) throw new Error(`Upload failed (${put.status})`);
         changes.avatar_key = upload.key;

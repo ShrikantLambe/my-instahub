@@ -73,7 +73,19 @@ async def get_counts(
             "SELECT id, like_count, like_version FROM posts WHERE id = ANY($1::bigint[])", misses
         )
         for row in rows:
-            value = LikeCount(row["like_count"], row["like_version"])
-            found[row["id"]] = value
-            await store(r, row["id"], value)
+            found[row["id"]] = LikeCount(row["like_count"], row["like_version"])
+        await store_many(r, {row["id"]: found[row["id"]] for row in rows})
     return found
+
+
+async def store_many(r: aioredis.Redis | None, values: dict[int, LikeCount]) -> None:
+    """Refill several counts in one round trip (one pipeline, not one call per post)."""
+    if r is None or not values:
+        return
+    try:
+        pipe = r.pipeline(transaction=False)
+        for post_id, value in values.items():
+            pipe.eval(SET_IF_NEWER, 1, key(post_id), value.version, value.count, TTL_SECONDS)
+        await pipe.execute()
+    except Exception:
+        log.warning("like cache refill failed", exc_info=True)

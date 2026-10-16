@@ -1,4 +1,5 @@
 import asyncio
+from typing import Annotated
 import contextlib
 import json
 import logging
@@ -14,11 +15,11 @@ from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app import cache, comments, counter, cursor, db, feed, follows, likes, notifications, storage
+from app import cache, comments, counter, cursor, db, feed, follows, likes, notifications, ratelimit, storage
 from app.events import broker
 from app.auth import current_user_id, optional_user_id
 from app.config import settings
@@ -63,6 +64,11 @@ def make_redis(url: str) -> aioredis.Redis:
 
 
 log = logging.getLogger("app")
+
+# Ids are Postgres bigints; anything outside that range is a 422, not a database error.
+MAX_ID = 2**63 - 1
+PostId = Annotated[int, Path(ge=1, le=MAX_ID)]
+CommentId = Annotated[int, Path(ge=1, le=MAX_ID)]
 
 
 def buffered() -> bool:
@@ -130,6 +136,14 @@ POST_COLUMNS = """
     u.id AS author_id, u.username AS author_username, u.display_name AS author_display_name,
     u.avatar_key AS author_avatar_key
 """
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    """Liveness only, for the platform's frequent health checks. It touches neither
+    Postgres nor Redis, so probes don't spend the Upstash free tier's command quota.
+    /health below checks both stores and is for people."""
+    return {"status": "ok"}
 
 
 @app.get("/health")
@@ -203,7 +217,7 @@ async def fetch_post(post_id: int) -> Post | None:
 
 
 @app.get("/posts/{post_id}", response_model=Post)
-async def get_post(post_id: int, viewer_id: UUID | None = Depends(optional_user_id)) -> Post:
+async def get_post(post_id: PostId, viewer_id: UUID | None = Depends(optional_user_id)) -> Post:
     post = await fetch_post(post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="post not found")
@@ -287,7 +301,7 @@ async def put_me(body: ProfileIn, user_id: UUID = Depends(current_user_id)) -> P
 
 
 @app.patch("/me", response_model=Profile)
-async def patch_me(body: ProfileUpdate, user_id: UUID = Depends(current_user_id)) -> Profile:
+async def patch_me(body: ProfileUpdate, user_id: UUID = Depends(ratelimit.limit("profile", 20, 60))) -> Profile:
     """Edit profile: username, display name, bio, city, website and photo.
 
     Only the fields present in the request change, so the form can send just what was
@@ -298,8 +312,10 @@ async def patch_me(body: ProfileUpdate, user_id: UUID = Depends(current_user_id)
     if key is not None:
         if not _owns_key(user_id, key, "avatars"):
             raise HTTPException(status_code=400, detail="avatar_key is not one of your uploads")
-        if not await storage.object_exists(key):
-            raise HTTPException(status_code=400, detail="upload not found; upload the photo first")
+        await check_upload(key)
+    old_avatar = None
+    if "avatar_key" in changes:  # replacing or removing the photo: delete the old file after
+        old_avatar = await db.get_pool().fetchval("SELECT avatar_key FROM users WHERE id = $1", user_id)
     if not changes:
         return await get_me(user_id)
     # Column names come from the model's fixed field list, never from the request.
@@ -312,11 +328,24 @@ async def patch_me(body: ProfileUpdate, user_id: UUID = Depends(current_user_id)
         raise HTTPException(status_code=409, detail="username is taken") from None
     if row is None:
         raise HTTPException(status_code=404, detail="profile not found")
+    if old_avatar and old_avatar != row["avatar_key"]:
+        await storage.delete_quietly(old_avatar)  # a removed photo shouldn't stay public
     return Profile.from_row(row)
 
 
+async def check_upload(key: str) -> None:
+    """The uploaded object exists and isn't over the size limit. A presigned PUT can't
+    cap the size itself, so an oversized upload is deleted here instead of attached."""
+    size = await storage.object_size(key)
+    if size is None:
+        raise HTTPException(status_code=400, detail="upload not found; upload the photo first")
+    if size > settings.max_upload_bytes:
+        await storage.delete_quietly(key)
+        raise HTTPException(status_code=413, detail=f"photos can be at most {settings.max_upload_bytes // 2**20} MB")
+
+
 @app.post("/uploads", response_model=UploadOut)
-async def create_upload(body: UploadIn, user_id: UUID = Depends(current_user_id)) -> UploadOut:
+async def create_upload(body: UploadIn, user_id: UUID = Depends(ratelimit.limit("upload", 30, 3600))) -> UploadOut:
     """Hand out a short-lived URL the browser PUTs the photo to, straight into the bucket."""
     ext = storage.IMAGE_TYPES[body.content_type]
     now = datetime.now(timezone.utc)
@@ -338,11 +367,10 @@ def _owns_key(user_id: UUID, key: str, folder: str = "posts") -> bool:
 
 
 @app.post("/posts", response_model=Post, status_code=201)
-async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) -> Post:
+async def create_post(body: PostIn, user_id: UUID = Depends(ratelimit.limit("post", 30, 3600))) -> Post:
     if not _owns_key(user_id, body.image_key):
         raise HTTPException(status_code=400, detail="image_key is not one of your uploads")
-    if not await storage.object_exists(body.image_key):
-        raise HTTPException(status_code=400, detail="upload not found; upload the photo first")
+    await check_upload(body.image_key)
     try:
         post_id = await db.get_pool().fetchval(
             "INSERT INTO posts (author_id, caption, image_key, image_width, image_height) "
@@ -363,7 +391,7 @@ async def create_post(body: PostIn, user_id: UUID = Depends(current_user_id)) ->
 
 
 @app.post("/posts/{post_id}/like", response_model=LikeOut)
-async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
+async def like_post(post_id: PostId, user_id: UUID = Depends(ratelimit.limit("like", 120, 60))) -> LikeOut:
     """Idempotent: liking an already-liked post returns the current count unchanged."""
     try:
         value, changed = await (
@@ -380,7 +408,7 @@ async def like_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> L
 
 
 @app.delete("/posts/{post_id}/like", response_model=LikeOut)
-async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) -> LikeOut:
+async def unlike_post(post_id: PostId, user_id: UUID = Depends(ratelimit.limit("like", 120, 60))) -> LikeOut:
     """Idempotent mirror of like: removing a like that isn't there changes nothing."""
     try:
         value, changed = await (
@@ -395,7 +423,7 @@ async def unlike_post(post_id: int, user_id: UUID = Depends(current_user_id)) ->
 
 
 @app.post("/users/{username}/follow", response_model=FollowOut)
-async def follow_user(username: str, user_id: UUID = Depends(current_user_id)) -> FollowOut:
+async def follow_user(username: str, user_id: UUID = Depends(ratelimit.limit("follow", 60, 60))) -> FollowOut:
     """Idempotent: following someone you already follow changes nothing."""
     try:
         result = await follows.follow(db.get_pool(), user_id, username)
@@ -413,7 +441,7 @@ async def follow_user(username: str, user_id: UUID = Depends(current_user_id)) -
 
 
 @app.delete("/users/{username}/follow", response_model=FollowOut)
-async def unfollow_user(username: str, user_id: UUID = Depends(current_user_id)) -> FollowOut:
+async def unfollow_user(username: str, user_id: UUID = Depends(ratelimit.limit("follow", 60, 60))) -> FollowOut:
     try:
         result = await follows.unfollow(db.get_pool(), user_id, username)
     except follows.UserNotFound:
@@ -482,7 +510,7 @@ async def home_feed(
 
 @app.get("/posts/{post_id}/comments", response_model=CommentPage)
 async def list_comments(
-    post_id: int,
+    post_id: PostId,
     before: str | None = Query(None, description="next_cursor from the previous page"),
     limit: int = Query(20, ge=1, le=50),
 ) -> CommentPage:
@@ -505,7 +533,7 @@ async def list_comments(
 
 
 @app.post("/posts/{post_id}/comments", response_model=CommentChange, status_code=201)
-async def add_comment(post_id: int, body: CommentIn, user_id: UUID = Depends(current_user_id)) -> CommentChange:
+async def add_comment(post_id: PostId, body: CommentIn, user_id: UUID = Depends(ratelimit.limit("comment", 20, 60))) -> CommentChange:
     try:
         row, count = await comments.add(db.get_pool(), post_id, user_id, body.body)
     except likes.PostNotFound:
@@ -521,7 +549,7 @@ async def add_comment(post_id: int, body: CommentIn, user_id: UUID = Depends(cur
 
 
 @app.delete("/comments/{comment_id}", response_model=CommentChange)
-async def delete_comment(comment_id: int, user_id: UUID = Depends(current_user_id)) -> CommentChange:
+async def delete_comment(comment_id: CommentId, user_id: UUID = Depends(current_user_id)) -> CommentChange:
     """The comment's author can delete it, and so can the author of the post it's on."""
     try:
         deleted = await comments.delete(db.get_pool(), comment_id, user_id)
@@ -573,6 +601,8 @@ def parse_ids(raw: str) -> list[int]:
         ids = [int(x) for x in raw.split(",") if x.strip()]
     except ValueError:
         raise HTTPException(status_code=400, detail="ids must be comma-separated integers") from None
+    if any(not 0 < i <= MAX_ID for i in ids):
+        raise HTTPException(status_code=400, detail="post ids must be positive 64-bit integers")
     if not 0 < len(ids) <= MAX_WATCHED_POSTS:
         raise HTTPException(status_code=400, detail=f"give 1-{MAX_WATCHED_POSTS} post ids")
     return ids
@@ -586,6 +616,14 @@ async def like_counts(ids: str = Query(..., description="comma-separated post id
 
 
 HEARTBEAT_SECONDS = 15
+
+
+def too_many_streams() -> None:
+    """Each open stream holds memory and is visited on every event: cap them."""
+    if broker.connections >= settings.max_streams:
+        raise HTTPException(
+            status_code=503, detail="too many live connections; try again shortly", headers={"Retry-After": "30"}
+        )
 
 
 def sse(event: str, data: dict) -> str:
@@ -604,9 +642,12 @@ async def stream(posts: str = Query(..., description="comma-separated post ids t
     like_version and clients ignore anything older than what they already show.
     """
     post_ids = parse_ids(posts)
-    sub = broker.subscribe(set(post_ids))  # subscribe before the snapshot: nothing slips between
+    too_many_streams()
 
     async def events():
+        # Subscribe inside the generator: if the client leaves before it starts, nothing
+        # was registered, so nothing leaks. Still before the snapshot, so no gap.
+        sub = broker.subscribe(set(post_ids))
         try:
             yield "retry: 3000\n\n"
             snapshot = await counts_for(post_ids)
@@ -703,7 +744,7 @@ async def read_notifications(user_id: UUID = Depends(current_user_id)) -> Unread
 
 
 @app.post("/notifications/ticket", response_model=StreamTicket)
-async def notification_ticket(user_id: UUID = Depends(current_user_id)) -> StreamTicket:
+async def notification_ticket(user_id: UUID = Depends(ratelimit.limit("ticket", 30, 60))) -> StreamTicket:
     """EventSource can't send an Authorization header, so the browser trades its token
     for a short-lived, single-use ticket and opens the stream with that."""
     ticket = await notifications.issue_ticket(app.state.redis, user_id)
@@ -718,12 +759,13 @@ async def notification_stream(ticket: str = Query(..., description="from POST /n
     The ticket is used up by opening the stream, so after a disconnect the browser gets a
     fresh ticket and reconnects; the opening `unread` event catches it up.
     """
+    too_many_streams()
     user_id = await notifications.redeem_ticket(app.state.redis, ticket)
     if user_id is None:
         raise HTTPException(status_code=401, detail="ticket expired or already used")
-    sub = broker.subscribe(set(), user_id=str(user_id))
 
     async def events():
+        sub = broker.subscribe(set(), user_id=str(user_id))
         try:
             yield "retry: 3000\n\n"
             yield sse("unread", {"unread_count": await notifications.unread_count(db.get_pool(), user_id)})

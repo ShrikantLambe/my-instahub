@@ -3,24 +3,13 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiFetch, type Post, type Upload } from "@/lib/api";
+import { prepareImage } from "@/lib/image";
 import { useAuth } from "../AuthProvider";
 import { PostImage } from "../PostImage";
 
 const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
-const MAX_BYTES = 10 * 1024 * 1024;
-
-// Pixel size of the chosen photo, sent with the post so the feed can lay it out
-// at the right shape before it loads.
-async function imageSize(file: File): Promise<{ width: number; height: number } | null> {
-  try {
-    const bitmap = await createImageBitmap(file);
-    const size = { width: bitmap.width, height: bitmap.height };
-    bitmap.close();
-    return size;
-  } catch {
-    return null; // unreadable here; the feed will measure it on load instead
-  }
-}
+const MAX_BYTES = 25 * 1024 * 1024; // before resizing; what's uploaded is much smaller
+const MAX_SIDE = 1440; // px, longest side
 
 export default function NewPostPage() {
   const router = useRouter();
@@ -50,7 +39,7 @@ export default function NewPostPage() {
     const picked = e.target.files?.[0] ?? null;
     setError(null);
     if (picked && !ACCEPTED.includes(picked.type)) return setError("Use a JPEG, PNG or WebP image.");
-    if (picked && picked.size > MAX_BYTES) return setError("That image is over 10 MB.");
+    if (picked && picked.size > MAX_BYTES) return setError("That image is over 25 MB.");
     setFile(picked);
   }
 
@@ -60,30 +49,33 @@ export default function NewPostPage() {
     const token = session!.access_token;
     setError(null);
     try {
-      // 1. Ask the API for a short-lived upload URL.
-      setStatus("Preparing upload…");
+      // 1. Resize and re-encode here, which also drops location metadata (lib/image.ts).
+      setStatus("Preparing photo…");
+      const image = await prepareImage(file, MAX_SIDE).catch(() => {
+        throw new Error("Couldn't read that image. Try a different photo.");
+      });
+      // 2. Ask the API for a short-lived upload URL.
       const upload = await apiFetch<Upload>("/uploads", token, {
         method: "POST",
-        body: JSON.stringify({ content_type: file.type }),
+        body: JSON.stringify({ content_type: image.type }),
       });
-      // 2. Send the bytes straight to storage; they never pass through the API.
+      // 3. Send the bytes straight to storage; they never pass through the API.
       setStatus("Uploading photo…");
       const put = await fetch(upload.upload_url, {
         method: "PUT",
-        headers: { "Content-Type": file.type },
-        body: file,
+        headers: { "Content-Type": image.type },
+        body: image.blob,
       });
       if (!put.ok) throw new Error(`Upload failed (${put.status})`);
-      // 3. Create the post pointing at the uploaded object.
+      // 4. Create the post pointing at the uploaded object.
       setStatus("Posting…");
-      const size = await imageSize(file);
       await apiFetch<Post>("/posts", token, {
         method: "POST",
         body: JSON.stringify({
           image_key: upload.key,
           caption: caption || null,
-          image_width: size?.width ?? null,
-          image_height: size?.height ?? null,
+          image_width: image.width,
+          image_height: image.height,
         }),
       });
       router.push("/");

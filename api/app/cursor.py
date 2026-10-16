@@ -26,6 +26,9 @@ def decode(cursor: str) -> tuple[datetime, int]:
         created_at = datetime.fromisoformat(ts)
         if created_at.tzinfo is None:
             raise ValueError("cursor timestamp must include a timezone")
-        return created_at, int(pid)
+        post_id = int(pid)
+        if not 0 < post_id < 2**63:  # a Postgres bigint; bigger would be a database error
+            raise ValueError("cursor id out of range")
+        return created_at, post_id
     except (ValueError, UnicodeDecodeError) as exc:
         raise BadCursor("invalid cursor") from exc
