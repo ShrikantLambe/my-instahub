@@ -82,7 +82,7 @@ function FollowingFeed({ token }: { token: string }) {
     return () => io.disconnect();
   }, [status, cursor, load]);
 
-  const live = useLiveCounts(posts.map((p) => p.id)).counts;
+  const live = useLiveCounts(posts.map((p) => p.id));
 
   if (status === "end" && posts.length === 0) {
     return (
@@ -95,7 +95,7 @@ function FollowingFeed({ token }: { token: string }) {
   return (
     <section className="feed">
       {posts.map((p) => (
-        <PostCard key={p.id} post={p} live={live[p.id]} />
+        <PostCard key={p.id} post={p} live={live.counts[p.id]} comments={live.commentCounts[p.id]} />
       ))}
       <div ref={sentinel} className="feed-end">
         {status === "loading" && <span className="muted">Loading…</span>}

@@ -101,3 +101,21 @@ img.photo { display: block; padding: 0; }
 .live-badge { margin: 0; font-size: 0.8rem; color: var(--muted); }
 .live-badge.live span { color: #2e9e5b; }
 .live-badge.offline span { color: var(--danger); }
+
+.comments { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.comments h2 { margin: 0; font-size: 0.95rem; }
+.comment-form { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.comment-form input {
+  flex: 1; min-width: 0; font: inherit; color: var(--text);
+  background: transparent; border: 0; padding: 6px 0; outline: none;
+}
+.comment-form .link { font-weight: 600; }
+.comment-form .link:disabled { opacity: 0.4; cursor: default; }
+.comment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.comment-list li p { margin: 0; overflow-wrap: anywhere; }
+.comment-list li.pending { opacity: 0.6; }
+.comment-author { font-weight: 600; }
+.comment-body { white-space: pre-wrap; }
+.comment-meta { display: flex; gap: 12px; font-size: 0.8rem; color: var(--muted); margin-top: 2px !important; }
+.comment-meta .link { color: var(--muted); font-size: inherit; }
+.comments > .link { align-self: flex-start; color: var(--muted); }

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { apiFetch, type Post } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { apiFetch, type CommentPage, type Post } from "@/lib/api";
 import { useAuth } from "./AuthProvider";
+import { Comments } from "./Comments";
 import { PostCard } from "./PostCard";
 import { useLiveCounts } from "./useLiveCounts";
 
@@ -15,10 +16,12 @@ export function Feed({
   initialPosts,
   path,
   single = false,
+  initialComments = null,
 }: {
   initialPosts: Post[];
   path: string;
-  single?: boolean; // path returns one post rather than a list
+  single?: boolean; // path returns one post rather than a list; also shows its comments
+  initialComments?: CommentPage | null;
 }) {
   const { session } = useAuth();
   const [posts, setPosts] = useState(initialPosts);
@@ -37,14 +40,27 @@ export function Feed({
     };
   }, [token, path, single]);
 
-  const { counts, status } = useLiveCounts(posts.map((p) => p.id));
+  // Comment changes from the stream, handed to the comment list on a single post page.
+  const commentEvents = useMemo(() => new EventTarget(), []);
+  const { counts, commentCounts, status } = useLiveCounts(
+    posts.map((p) => p.id),
+    single ? (change) => commentEvents.dispatchEvent(new CustomEvent("change", { detail: change })) : undefined,
+  );
 
   return (
     <section className="feed">
       {single && <LiveBadge status={status} />}
       {posts.map((p) => (
-        <PostCard key={p.id} post={p} live={counts[p.id]} />
+        <PostCard key={p.id} post={p} live={counts[p.id]} comments={commentCounts[p.id]} single={single} />
       ))}
+      {single && posts[0] && (
+        <Comments
+          post={posts[0]}
+          initial={initialComments}
+          events={commentEvents}
+          live={commentCounts[posts[0].id]}
+        />
+      )}
     </section>
   );
 }

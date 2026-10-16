@@ -15,6 +15,8 @@ export type Post = {
   like_count: number;
   like_version: number;
   viewer_has_liked: boolean;
+  comment_count: number;
+  comment_version: number;
   created_at: string;
 };
 
@@ -40,6 +42,24 @@ export type FollowResult = { username: string; following: boolean; follower_coun
 
 export type FeedPage = { posts: Post[]; next_cursor: string | null };
 
+export type Comment = { id: number; post_id: number; author: Author; body: string; created_at: string };
+
+export type CommentPage = {
+  comments: Comment[]; // newest first
+  next_cursor: string | null;
+  comment_count: number;
+  comment_version: number;
+};
+
+// What POST /posts/{id}/comments, DELETE /comments/{id} and the live stream send.
+export type CommentChange = {
+  post_id: number;
+  comment?: Comment | null;
+  deleted_id?: number | null;
+  comment_count: number;
+  comment_version: number;
+};
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -59,6 +79,10 @@ async function get<T>(path: string): Promise<T | null> {
 export const getPosts = async () => (await get<Post[]>("/posts")) ?? [];
 export const getPost = (id: string) => get<Post>(`/posts/${encodeURIComponent(id)}`);
 export const getUser = (username: string) => get<User>(`/users/${encodeURIComponent(username)}`);
+export const getComments = (postId: number, before?: string) =>
+  get<CommentPage>(
+    `/posts/${postId}/comments` + (before ? `?before=${encodeURIComponent(before)}` : ""),
+  );
 export const getUserPosts = async (username: string) =>
   (await get<Post[]>(`/users/${encodeURIComponent(username)}/posts`)) ?? [];
 
