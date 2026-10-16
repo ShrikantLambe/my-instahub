@@ -29,4 +29,5 @@ dump.rdb
 
 # Load-test tokens and raw output
 loadtest/tokens.json
+loadtest/feed_tokens.json
 loadtest/out/

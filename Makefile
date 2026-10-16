@@ -1,4 +1,4 @@
-.PHONY: up down bucket api-install migrate seed api test web-install web reset loadtest reconcile
+.PHONY: up down bucket api-install migrate seed api test web-install web reset loadtest feedtest reconcile
 
 up:            ## Start Postgres, Redis and the local S3 (moto), then create the bucket
 	docker compose up -d --wait
@@ -27,6 +27,9 @@ test:          ## Run API tests (needs Postgres up)
 
 loadtest:      ## Load-test one hot post in direct and buffered mode (needs k6; local DB only)
 	cd api && uv run python -m scripts.loadtest $(ARGS)
+
+feedtest:      ## Compare home feed fan-out on read vs write (needs k6; local DB only)
+	cd api && uv run python -m scripts.feedtest $(ARGS)
 
 reconcile:     ## Recount likes from the likes table and repair drifted counters
 	cd api && uv run python -m scripts.reconcile
